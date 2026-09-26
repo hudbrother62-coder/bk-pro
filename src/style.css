@@ -4,3 +4,4 @@
 
 /* Original Bantu Beres mark, framed for both themes. */
 .brand-mark{font-size:0;background:#fff url('/bantu-beres-logo.png') center 35% / 112px 112px no-repeat;box-shadow:0 0 0 1px #8b60a32b}.brand-mark span{display:none}.brand-mark.small{background-size:123px 123px}
+.claim-label{display:flex;flex-direction:column;gap:7px;font-size:11px;font-weight:800;margin-bottom:12px}.invite-code{padding:17px;border-radius:10px;background:var(--purple-soft);display:grid;gap:12px}.invite-code code{display:block;overflow-wrap:anywhere;font-size:11px;background:var(--panel);padding:12px;border-radius:8px;user-select:all}.invite-code .btn{justify-self:start}.invite-code p{color:var(--muted);font-size:11px;margin:0}

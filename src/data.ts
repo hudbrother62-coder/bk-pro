@@ -8,7 +8,14 @@ export const kinds = [
   ['need','Pemetaan kebutuhan'], ['counseling','Konseling individu'], ['group','Konseling kelompok'], ['classical','Layanan klasikal'], ['rpl','RPL layanan'], ['program','Program BK'], ['agenda','Agenda'], ['followup','Tindak lanjut'], ['visit','Kunjungan rumah'], ['referral','Rujukan'], ['career','Perencanaan karier'], ['document','Dokumen'],
 ] as const
 export const domains=['Pribadi','Sosial','Belajar','Karier']
-export const client:SupabaseClient|null = import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ? createClient(import.meta.env.VITE_SUPABASE_URL,import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,{auth:{autoRefreshToken:true,persistSession:true,detectSessionInUrl:true}}):null
+// Publishable keys are designed for browser exposure; RLS protects the data.
+// This application is bound to its dedicated BK Pro project.
+const supabaseUrl = 'https://vtcdopzlgitqhvxqmtuy.supabase.co'
+const publishableKey = 'sb_publishable_jkOHo3K-2WgQ6LUnZdgGwg_7MYn-KU-'
+export const registrationAuthorization = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0Y2RvcHpsZ2l0cWh2eHFtdHV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA0MDI4MzAsImV4cCI6MjEwNTk3ODgzMH0.f0Kb-dS43bpEDfCJyTs_tyoAjFpN6VsSMRenoSdN2Kw'
+export const bkProjectUrl = supabaseUrl
+export const bkPublishableKey = publishableKey
+export const client:SupabaseClient|null = createClient(supabaseUrl,publishableKey,{auth:{autoRefreshToken:true,persistSession:true,detectSessionInUrl:true}})
 export const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
 export const dateLabel=(v:string|null|undefined)=>v?new Intl.DateTimeFormat('id-ID',{day:'numeric',month:'short',year:'numeric',timeZone:'Asia/Jakarta'}).format(new Date(v+'T12:00:00+07:00')):'—'
 export const uid=()=>crypto.randomUUID()
