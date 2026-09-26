@@ -57,15 +57,28 @@ export default function App(){
       else setRemoteReport(data as typeof remoteReport)
       return
     }
-    const [a,b,c,d]=await Promise.all([
-      client.from('students').select('*').eq('school_id',member.school_id).order('name'),
-      client.from('bk_cases').select('*').eq('school_id',member.school_id).order('opened_on',{ascending:false}),
-      client.from('bk_records').select('*').eq('school_id',member.school_id).order('happened_on',{ascending:false}),
-      client.rpc('bk_school_report',{p_school:member.school_id})
-    ])
-    for(const x of [a,b,c])if(x.error)flash(x.error.message)
-    setStudents((a.data||[]) as Student[]);setCases((b.data||[]) as Case[]);setRecords((c.data||[]) as RecordItem[])
-    if(d.error)flash(d.error.message);else setRemoteReport(d.data as typeof remoteReport)
+    const pageSchool=async(table:'students'|'bk_cases'|'bk_records',order:string,ascending=false)=>{
+      const out:any[]=[];let offset=0
+      while(true){
+        const {data,error}=await client.from(table).select('*').eq('school_id',member.school_id)
+          .order(order,{ascending}).range(offset,offset+999)
+        if(error)throw error
+        out.push(...(data||[]))
+        if((data||[]).length<1000)break
+        offset+=1000
+      }
+      return out
+    }
+    try{
+      const [studentRows,caseRows,recordRows,d]=await Promise.all([
+        pageSchool('students','name',true),
+        pageSchool('bk_cases','opened_on'),
+        pageSchool('bk_records','happened_on'),
+        client.rpc('bk_school_report',{p_school:member.school_id})
+      ])
+      setStudents(studentRows as Student[]);setCases(caseRows as Case[]);setRecords(recordRows as RecordItem[])
+      if(d.error){setRemoteReport(null);flash(d.error.message)}else setRemoteReport(d.data as typeof remoteReport)
+    }catch(e:any){flash(e?.message||'Data sekolah belum berhasil dimuat. Coba muat ulang.')}
   }
   useEffect(()=>{if(user)void refresh(user);else{setMembership(null);setStudents([]);setCases([]);setRecords([]);setRemoteReport(null);setTab('dashboard');setSelected(null)}},[user?.id])
   const activeCases=cases.filter(c=>c.status!=='Selesai'&&c.status!=='Arsip')
