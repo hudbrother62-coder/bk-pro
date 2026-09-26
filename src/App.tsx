@@ -44,15 +44,16 @@ export default function App(){
   useEffect(()=>{document.documentElement.dataset.theme=theme;localStorage.setItem('bk-theme',theme)},[theme])
   useEffect(()=>{if(!client){setBoot(false);return}client.auth.getUser().then(({data})=>{setUser(data.user);setBoot(false)});const {data:{subscription}}=client.auth.onAuthStateChange((_event,session)=>setUser(session?.user??null));return()=>subscription.unsubscribe()},[])
   const refresh=async(current=user)=>{
-    if(!client||!current)return
-    const {data:members,error}=await client.from('memberships').select('school_id,user_id,role,display_name,school:schools(name,academic_year)').eq('user_id',current.id).limit(1)
+    const db=client
+    if(!db||!current)return
+    const {data:members,error}=await db.from('memberships').select('school_id,user_id,role,display_name,school:schools(name,academic_year)').eq('user_id',current.id).limit(1)
     if(error){flash(error.message);return}
     const member=(members?.[0]||null) as unknown as Membership|null;setMembership(member)
     if(!member){setStudents([]);setCases([]);setRecords([]);setRemoteReport(null);return}
     // Principal may only request aggregate statistics; never query student or case detail.
     if(member.role==='principal'){
       setStudents([]);setCases([]);setRecords([])
-      const {data,error:reportError}=await client.rpc('bk_school_report',{p_school:member.school_id})
+      const {data,error:reportError}=await db.rpc('bk_school_report',{p_school:member.school_id})
       if(reportError){setRemoteReport(null);flash(reportError.message)}
       else setRemoteReport(data as typeof remoteReport)
       return
@@ -60,7 +61,7 @@ export default function App(){
     const pageSchool=async(table:'students'|'bk_cases'|'bk_records',order:string,ascending=false)=>{
       const out:any[]=[];let offset=0
       while(true){
-        const {data,error}=await client.from(table).select('*').eq('school_id',member.school_id)
+        const {data,error}=await db.from(table).select('*').eq('school_id',member.school_id)
           .order(order,{ascending}).range(offset,offset+999)
         if(error)throw error
         out.push(...(data||[]))
@@ -74,7 +75,7 @@ export default function App(){
         pageSchool('students','name',true),
         pageSchool('bk_cases','opened_on'),
         pageSchool('bk_records','happened_on'),
-        client.rpc('bk_school_report',{p_school:member.school_id})
+        db.rpc('bk_school_report',{p_school:member.school_id})
       ])
       setStudents(studentRows as Student[]);setCases(caseRows as Case[]);setRecords(recordRows as RecordItem[])
       if(d.error){setRemoteReport(null);flash(d.error.message)}else setRemoteReport(d.data as typeof remoteReport)
