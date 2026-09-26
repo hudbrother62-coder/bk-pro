@@ -20,18 +20,31 @@ npm ci
 npm run dev
 ```
 
-Jalankan kedua migrasi di `supabase/migrations/` pada proyek Supabase **baru** dan deploy Edge Function `supabase/functions/register/index.ts` dengan pemeriksaan JWT aktif, lalu jalankan `npm run build`. Fungsi pendaftaran menggunakan kunci service role hanya pada runtime Supabase dan membatasi percobaan per IP. Jangan masukkan service role key ke variabel `VITE_`.
+Jalankan seluruh migrasi berurutan di `supabase/migrations/` pada proyek Supabase **baru** dan deploy Edge Function `supabase/functions/register/index.ts` dengan pemeriksaan JWT aktif, lalu jalankan `npm run build`. Fungsi pendaftaran menggunakan kunci service role hanya pada runtime Supabase dan membatasi percobaan per IP. Jangan masukkan service role key ke variabel `VITE_`.
 
 Deployment Vercel: framework Vite, build command `npm run build`, output directory `dist`. Kode klien memakai URL dan publishable key proyek BK Pro khusus; publishable key aman berada di browser selama aturan RLS tetap aktif. Kunci rahasia atau service role tidak boleh ditaruh di kode klien.
 
 ## Format CSV siswa
 
-Header minimal: `NIS,Nama,Kelas`. Opsional: `JK,Wali,Kontak`. NIS dipakai sebagai kunci unik per sekolah agar impor berulang memperbarui data yang sama. Ekspor mengikuti header yang sama. Arsip tidak menghapus riwayat layanan.
+Header minimal: `NIS,Nama,Kelas`. Opsional: `JK,Wali,Kontak`. NIS dipakai sebagai kunci unik per sekolah. Impor berulang melewati siswa yang sudah ada dan tidak menimpa profil lama. Ekspor mengikuti header yang sama. Arsip tidak menghapus riwayat layanan.
 
 ## Akses data
 
-RLS membatasi seluruh data menurut sekolah. Kepala sekolah hanya menerima hitungan agregat melalui fungsi `bk_school_report`; tidak menerima identitas siswa atau isi catatan. Sesi individu dan kunjungan rumah otomatis menjadi rahasia dan hanya bisa dibaca konselor pencatat. Audit perubahan menyimpan metadata tindakan tanpa menyalin isi catatan. Kolom sensitif tidak diekspor ke laporan agregat.
+RLS membatasi seluruh data menurut sekolah dan mencabut akses secara langsung saat keanggotaan sekolah dicabut. Kasus hanya dapat dibaca konselor yang ditugaskan atau owner/admin sekolah. Kepala sekolah hanya menerima hitungan agregat melalui fungsi `bk_school_report`; tidak menerima identitas siswa atau isi catatan. Sesi individu dan kunjungan rumah otomatis menjadi rahasia dan hanya bisa dibaca konselor pencatat. Audit perubahan menyimpan metadata tindakan tanpa menyalin isi catatan. Kolom sensitif tidak diekspor ke laporan agregat.
 
 ## Batas versi ini
 
 Dokumen dicatat sebagai tautan/metadata, belum mempunyai penyimpanan berkas privat. RPL disimpan sebagai catatan terstruktur, belum menjadi generator format dokumen resmi. AI, notifikasi push, pengingat otomatis, dan migrasi data siswa pribadi dari spreadsheet sumber belum diaktifkan. Kode undangan harus dibagikan langsung melalui kanal tepercaya; email yang belum diverifikasi sendiri tidak boleh dipakai sebagai bukti hak akses.
+
+## Progres QA (26 September 2026)
+
+- Repository: `hudbrother62-coder/bk-pro`, deploy production `https://bk-pro.vercel.app`.
+- Backend khusus: project Supabase `vtcdopzlgitqhvxqmtuy` (Singapura); jangan dicampur dengan One Pro, Disiplin Pro, atau aplikasi Bantu Beres lainnya.
+- Pendaftaran langsung memakai Edge Function `register`; penerimaan undangan menggunakan token sekali pakai terikat email tujuan.
+- Pembuatan sekolah dan membership owner menggunakan RPC `create_bk_school` dalam satu transaksi.
+- Principal hanya meminta `bk_school_report`, tanpa melakukan query data siswa/kasus/rekam konseling.
+- Pembacaan kasus/catatan memerlukan keanggotaan sekolah yang masih aktif. Catatan rahasia tetap hanya untuk penanggung jawab.
+- Pengubahan profil siswa tidak memindahkan penanggung jawab secara diam-diam. Impor CSV melewati NIS terdaftar; pemuatan data dipaginasi hingga lengkap.
+- Seluruh perubahan pada sesi ini tidak menghapus/mengubah record sekolah karena basis data belum berisi akun atau data sekolah.
+
+**Masih perlu tes interaktif terautentikasi:** buat akun QA sementara dengan prosedur aman, login owner/Guru BK/Kepala Sekolah, input dan cek persistensi data uji, coba undangan sekali pakai, ekspor laporan, dan uji tampilan HP. Status build READY/HTTP 200 bukan pengganti tes per tombol.
