@@ -4,7 +4,7 @@ Ruang kerja bimbingan dan konseling sekolah. Dibangun berdasarkan struktur sprea
 
 ## Modul yang dapat digunakan
 
-- Pendaftaran email dan kata sandi yang langsung masuk tanpa tautan verifikasi; undangan tim memakai kode acak sekali pakai yang hanya diberikan admin kepada petugas terkait.
+- Pendaftaran email dan kata sandi yang langsung masuk tanpa tautan verifikasi; akun baru langsung memiliki ruang kerja awal; undangan tim memakai tautan sekali pakai yang dibagikan admin kepada petugas terkait.
 - Data siswa 360° dengan filter kelas, status arsip, impor/ekspor CSV, dan riwayat kasus/layanan.
 - Kasus dengan ID unik, bidang, urgensi, sumber informasi, status, dan tanggal tindak lanjut.
 - Pemetaan kebutuhan; konseling individu dan kelompok; layanan klasikal; RPL; program; agenda; tindak lanjut; kunjungan rumah; rujukan; perencanaan karier; dan register dokumen.
@@ -34,17 +34,20 @@ RLS membatasi seluruh data menurut sekolah dan mencabut akses secara langsung sa
 
 ## Batas versi ini
 
-Dokumen dicatat sebagai tautan/metadata, belum mempunyai penyimpanan berkas privat. RPL disimpan sebagai catatan terstruktur, belum menjadi generator format dokumen resmi. AI, notifikasi push, pengingat otomatis, dan migrasi data siswa pribadi dari spreadsheet sumber belum diaktifkan. Kode undangan harus dibagikan langsung melalui kanal tepercaya; email yang belum diverifikasi sendiri tidak boleh dipakai sebagai bukti hak akses.
+Dokumen dicatat sebagai tautan/metadata, belum mempunyai penyimpanan berkas privat. RPL disimpan sebagai catatan terstruktur, belum menjadi generator format dokumen resmi. AI, notifikasi push, pengingat otomatis, dan migrasi data siswa pribadi dari spreadsheet sumber belum diaktifkan. Tautan undangan harus dibagikan langsung melalui kanal tepercaya; email yang belum diverifikasi sendiri tidak boleh dipakai sebagai bukti hak akses.
 
 ## Progres QA (26 September 2026)
 
 - Repository: `hudbrother62-coder/bk-pro`, deploy production `https://bk-pro.vercel.app`.
 - Backend khusus: project Supabase `vtcdopzlgitqhvxqmtuy` (Singapura); jangan dicampur dengan One Pro, Disiplin Pro, atau aplikasi Bantu Beres lainnya.
-- Pendaftaran langsung memakai Edge Function `register`; penerimaan undangan menggunakan token sekali pakai terikat email tujuan.
+- Pendaftaran langsung memakai Edge Function `register`; penerimaan undangan menggunakan tautan sekali pakai terikat email tujuan tanpa menyalin kode.
 - Pembuatan sekolah dan membership owner menggunakan RPC `create_bk_school` dalam satu transaksi.
 - Principal hanya meminta `bk_school_report`, tanpa melakukan query data siswa/kasus/rekam konseling.
 - Pembacaan kasus/catatan memerlukan keanggotaan sekolah yang masih aktif. Catatan rahasia tetap hanya untuk penanggung jawab.
 - Pengubahan profil siswa tidak memindahkan penanggung jawab secara diam-diam. Impor CSV melewati NIS terdaftar; pemuatan data dipaginasi hingga lengkap.
 - Seluruh perubahan pada sesi ini tidak menghapus/mengubah record sekolah karena basis data belum berisi akun atau data sekolah.
 
-**QA terverifikasi (27 September 2026):** pendaftaran email tanpa verifikasi langsung berhasil login; RPC pembuatan sekolah membuat owner dan membership; siswa, kasus, dan catatan konseling rahasia tersimpan; undangan token sekali pakai diterima kepala sekolah; kepala sekolah tidak dapat membaca baris siswa/kasus/catatan dan memperoleh hitungan agregat yang sesuai. Kebijakan RLS pembuatan sekolah diperbaiki melalui migrasi keempat. Akun dan sekolah uji telah dibersihkan. Antarmuka produksi, mode gelap/terang, dan tata letak ponsel tetap perlu peninjauan visual pada perangkat pengguna.\n
+**QA terverifikasi (27 September 2026):** pendaftaran email tanpa verifikasi langsung berhasil login; RPC pembuatan sekolah membuat owner dan membership; aplikasi kini membuat ruang kerja awal otomatis pada login pertama, siswa, kasus, dan catatan konseling rahasia tersimpan; undangan token sekali pakai diterima kepala sekolah; kepala sekolah tidak dapat membaca baris siswa/kasus/catatan dan memperoleh hitungan agregat yang sesuai. Kebijakan RLS pembuatan sekolah diperbaiki melalui migrasi keempat. Akun dan sekolah uji telah dibersihkan. Antarmuka produksi, mode gelap/terang, dan tata letak ponsel tetap perlu peninjauan visual pada perangkat pengguna.\n
+## Alur masuk terbaru
+
+Akun baru masuk langsung ke ruang kerja **Sekolah Baru** setelah daftar/login. Pemilik mengubah nama sekolah dan tahun ajaran melalui Pengaturan → Edit profil sekolah. Jika diundang admin, petugas membuka tautan undangan lalu login/daftar; keanggotaan diterima otomatis tanpa mengetik kode. Tautan bersifat sekali pakai dan hanya cocok dengan email tujuan. Jika tautan tidak berlaku, aplikasi menampilkan kesalahan dan tidak membuat ruang kerja lain secara otomatis.
