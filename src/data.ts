@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 export type Student = { id:string; school_id:string; nis:string; name:string; class_name:string; gender:string; guardian_name:string; guardian_phone:string; counselor_id:string|null; status:string; created_at:string }
 export type Case = { id:string; school_id:string; student_id:string; counselor_id:string; code:string; opened_on:string; domain:string; topic:string; priority:string; source:string; status:string; summary:string; next_on:string|null; created_at:string }
 export type RecordItem = { id:string; school_id:string; student_id:string|null; case_id:string|null; counselor_id:string; kind:string; happened_on:string; title:string; domain:string; status:string; notes:string; confidential:boolean; details:Record<string,string>; created_at:string }
+export type AttendanceItem = { id:string; school_id:string; student_id:string; attendance_date:string; status:'Hadir'|'Izin'|'Sakit'|'Alpa'; notes:string; counselor_id:string; created_at:string; updated_at:string }
 export type Membership = { school_id:string; user_id:string; role:string; display_name:string; school?:{name:string;academic_year:string}|null }
 export const kinds = [
   ['need','Pemetaan kebutuhan'], ['counseling','Konseling individu'], ['group','Konseling kelompok'], ['classical','Layanan klasikal'], ['rpl','RPL layanan'], ['program','Program BK'], ['agenda','Agenda'], ['followup','Tindak lanjut'], ['visit','Kunjungan rumah'], ['referral','Rujukan'], ['career','Perencanaan karier'], ['document','Dokumen'],
