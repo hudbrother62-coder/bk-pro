@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Archive, ArrowLeft, ArrowRight, BarChart3, Bell, BookOpen, CalendarDays, Check, ChevronDown, CircleHelp, ClipboardList, Download, FileText, GraduationCap, HeartHandshake, Home, LockKeyhole, LogOut, Menu, Moon, Plus, Search, Settings, ShieldCheck, Sun, Upload, Users, X, type LucideIcon } from 'lucide-react'
+import { Activity, Archive, ArrowLeft, ArrowRight, BarChart3, Bell, BookOpen, CalendarDays, Check, CircleHelp, ClipboardList, Download, FileText, GraduationCap, HeartHandshake, Home, LockKeyhole, LogOut, Menu, Moon, Plus, Search, Settings, ShieldCheck, Sun, Upload, Users, X, type LucideIcon } from 'lucide-react'
 import { client, csv, dateLabel, domains, download, kinds, today, uid, bkProjectUrl, bkPublishableKey, registrationAuthorization, type Case, type Membership, type RecordItem, type Student } from './data'
 import type { User } from '@supabase/supabase-js'
 
@@ -32,7 +32,7 @@ const initialRecord={student_id:'',case_id:'',happened_on:today(),title:'',domai
 
 export default function App(){
   const [user,setUser]=useState<User|null>(null),[boot,setBoot]=useState(true),[demo,setDemo]=useState(false)
-  const [membership,setMembership]=useState<Membership|null>(null),[students,setStudents]=useState<Student[]>([]),[cases,setCases]=useState<Case[]>([]),[records,setRecords]=useState<RecordItem[]>([])
+  const [membership,setMembership]=useState<Membership|null>(null),[memberships,setMemberships]=useState<Membership[]>([]),[activeSchoolId,setActiveSchoolId]=useState(''),[students,setStudents]=useState<Student[]>([]),[cases,setCases]=useState<Case[]>([]),[records,setRecords]=useState<RecordItem[]>([])
   const [remoteReport,setRemoteReport]=useState<{students:number;cases:number;completed:number;sessions:number;services:number;domains:Record<string,number>}|null>(null)
   const [tab,setTab]=useState<Tab>('dashboard'),[modal,setModal]=useState<Modal>(null),[editId,setEditId]=useState<string|null>(null),[selected,setSelected]=useState<Student|null>(null)
   const [studentForm,setStudentForm]=useState(initialStudent),[caseForm,setCaseForm]=useState(initialCase),[recordForm,setRecordForm]=useState(initialRecord)
@@ -43,34 +43,33 @@ export default function App(){
   const flash=(message:string)=>{setToast(message);setTimeout(()=>setToast(''),5000)}
   useEffect(()=>{document.documentElement.dataset.theme=theme;localStorage.setItem('bk-theme',theme)},[theme])
   useEffect(()=>{const invite=new URLSearchParams(location.search).get('invite');if(invite){sessionStorage.setItem('bk-invite',invite);const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url.pathname+url.search+url.hash)}if(!client){setBoot(false);return}client.auth.getUser().then(({data})=>{setUser(data.user);setBoot(false)});const {data:{subscription}}=client.auth.onAuthStateChange((_event,session)=>setUser(session?.user??null));return()=>subscription.unsubscribe()},[])
-  const refresh=async(current=user)=>{
+  const refresh=async(current=user,preferredSchoolId=activeSchoolId)=>{
     const db=client
     if(!db||!current)return
-    const {data:members,error}=await db.from('memberships').select('school_id,user_id,role,display_name,school:schools(name,academic_year)').eq('user_id',current.id).limit(1)
-    if(error){flash(error.message);setWorkspaceLoading(false);return}
-    let member=(members?.[0]||null) as unknown as Membership|null
-    if(!member){
-      setWorkspaceLoading(true)
-      const invite=sessionStorage.getItem('bk-invite')
-      if(invite){
-        sessionStorage.removeItem('bk-invite')
-        const {data:joined,error:joinError}=await db.rpc('claim_bk_invitation',{p_token:invite})
-        if(joinError||!joined){flash(joinError?.message||'Tautan undangan tidak berlaku atau sudah digunakan.');setWorkspaceLoading(false);return}
-        const {data:joinedMembers,error:readError}=await db.from('memberships').select('school_id,user_id,role,display_name,school:schools(name,academic_year)').eq('user_id',current.id).limit(1)
-        if(readError){flash(readError.message);setWorkspaceLoading(false);return}
-        member=(joinedMembers?.[0]||null) as unknown as Membership|null
-      }
-      if(!member){
-        const {error:createError}=await db.rpc('create_bk_school',{p_name:'Sekolah Baru',p_academic_year:'2026/2027'})
-        if(createError){flash(createError.message);setWorkspaceLoading(false);return}
-        const {data:newMembers,error:readError}=await db.from('memberships').select('school_id,user_id,role,display_name,school:schools(name,academic_year)').eq('user_id',current.id).limit(1)
-        if(readError){flash(readError.message);setWorkspaceLoading(false);return}
-        member=(newMembers?.[0]||null) as unknown as Membership|null
-      }
+    setWorkspaceLoading(true)
+    const invite=sessionStorage.getItem('bk-invite')
+    let inviteFailed=false,justJoined=false
+    if(invite){
+      sessionStorage.removeItem('bk-invite')
+      const {data:joined,error:joinError}=await db.rpc('claim_bk_invitation',{p_token:invite})
+      if(joinError||!joined){flash(joinError?.message||'Tautan undangan tidak berlaku atau sudah digunakan.');inviteFailed=true}
+      else justJoined=true
     }
-    if(member)sessionStorage.removeItem('bk-invite')
-    setMembership(member);setWorkspaceLoading(false)
-    if(!member){flash('Ruang kerja belum tersedia. Coba lagi.');return}
+    const readMemberships=()=>db.from('memberships').select('school_id,user_id,role,display_name,school:schools(name,academic_year)').eq('user_id',current.id).order('created_at',{ascending:false})
+    let {data:rows,error}=await readMemberships()
+    if(error){flash(error.message);setWorkspaceLoading(false);return}
+    if(!rows?.length&&!inviteFailed){
+      const {error:createError}=await db.rpc('create_bk_school',{p_name:'Sekolah Baru',p_academic_year:'2026/2027'})
+      if(createError){flash(createError.message);setWorkspaceLoading(false);return}
+      const result=await readMemberships();rows=result.data;error=result.error
+      if(error){flash(error.message);setWorkspaceLoading(false);return}
+    }
+    const available=(rows||[]) as unknown as Membership[]
+    setMemberships(available)
+    const member=(justJoined?available[0]:available.find(m=>m.school_id===preferredSchoolId)||available[0])||null
+    if(membership?.school_id!==member?.school_id){setStudents([]);setCases([]);setRecords([]);setRemoteReport(null)}
+    setMembership(member);setActiveSchoolId(member?.school_id||'');setWorkspaceLoading(false)
+    if(!member)return
     // Principal may only request aggregate statistics; never query student or case detail.
     if(member.role==='principal'){
       setStudents([]);setCases([]);setRecords([])
@@ -102,7 +101,7 @@ export default function App(){
       if(d.error){setRemoteReport(null);flash(d.error.message)}else setRemoteReport(d.data as typeof remoteReport)
     }catch(e:any){flash(e?.message||'Data sekolah belum berhasil dimuat. Coba muat ulang.')}
   }
-  useEffect(()=>{if(user)void refresh(user);else{setMembership(null);setWorkspaceLoading(true);setStudents([]);setCases([]);setRecords([]);setRemoteReport(null);setTab('dashboard');setSelected(null)}},[user?.id])
+  useEffect(()=>{if(user)void refresh(user);else{setMembership(null);setMemberships([]);setActiveSchoolId('');setWorkspaceLoading(true);setStudents([]);setCases([]);setRecords([]);setRemoteReport(null);setTab('dashboard');setSelected(null)}},[user?.id])
   const activeCases=cases.filter(c=>c.status!=='Selesai'&&c.status!=='Arsip')
   const due=records.filter(r=>r.kind==='followup'&&r.status!=='Selesai'&&r.details?.next_date&&r.details.next_date<=today()).length+cases.filter(c=>c.next_on&&c.next_on<=today()&&c.status==='Berjalan').length
   const classes=Array.from(new Set(students.map(s=>s.class_name))).filter(Boolean).sort()
@@ -191,7 +190,7 @@ export default function App(){
    if(!membership){if(workspaceLoading)return <div className="center-screen"><div className="loader"/>Menyiapkan ruang kerja…</div>;return <div className="setup-shell"><div className="setup-card"><img className="brand-logo" src="/bantu-beres-logo.png" alt="Logo Bantu Beres"/><span className="small-tag">RUANG KERJA</span><h1>Lengkapi nama sekolah</h1><p>Ruang kerja belum bisa dibuat otomatis. Isi nama sekolah untuk melanjutkan.</p><form onSubmit={createSchool} className="form-stack"><label>Nama sekolah<input required minLength={3} value={schoolName} onChange={e=>setSchoolName(e.target.value)}/></label><label>Tahun ajaran<input required value={academicYear} onChange={e=>setAcademicYear(e.target.value)}/></label><button disabled={busy} className="btn primary wide">Masuk ke ruang kerja <ArrowRight size={17}/></button></form><button className="text-button" onClick={()=>client?.auth.signOut()}>Keluar dari akun</button></div>{toast&&<div className="toast">{toast}</div>}</div>}
   return <div className="app-shell">
     {sidebar&&<div className="scrim" onClick={()=>setSidebar(false)}/>}
-    <aside className={`sidebar ${sidebar?'open':''}`}><div className="sidebar-head"><div className="brand"><img className="brand-logo" src="/bantu-beres-logo.png" alt="Logo Bantu Beres"/><span>Bantu Beres <strong>BK Pro</strong></span></div><button className="icon-btn mobile-only" onClick={()=>setSidebar(false)} aria-label="Tutup navigasi"><X size={20}/></button></div><div className="school-switch"><div className="school-icon"><GraduationCap size={19}/></div><div><strong>{school}</strong><small>Tahun ajaran {membership.school?.academic_year}</small></div><ChevronDown size={16}/></div><div className="nav-scroll">{nav.map(group=><div className="nav-group" key={group.title}><div className="nav-heading">{group.title}</div>{group.items.filter(([key])=>role!=='principal'||['dashboard','analytics','reports','settings'].includes(key)).map(([key,label,Icon])=><button className={`nav-item ${tab===key?'active':''}`} key={key} onClick={()=>{setTab(key);setSearch('');setSelected(null);setSidebar(false)}}><Icon size={18}/><span>{label}</span>{key==='followup'&&due>0&&<i>{due}</i>}</button>)}</div>)}</div><div className="sidebar-bottom"><div className="account-avatar">{membership.display_name.slice(0,1).toUpperCase()}</div><div><strong>{membership.display_name}</strong><small>{role==='owner'?'Admin sekolah':role==='counselor'?'Guru BK':role==='principal'?'Kepala sekolah':'Staf'}</small></div><button className="icon-btn" title="Keluar" onClick={()=>demo?setDemo(false):client?.auth.signOut()}><LogOut size={18}/></button></div></aside>
+    <aside className={`sidebar ${sidebar?'open':''}`}><div className="sidebar-head"><div className="brand"><img className="brand-logo" src="/bantu-beres-logo.png" alt="Logo Bantu Beres"/><span>Bantu Beres <strong>BK Pro</strong></span></div><button className="icon-btn mobile-only" onClick={()=>setSidebar(false)} aria-label="Tutup navigasi"><X size={20}/></button></div><div className="school-switch"><div className="school-icon"><GraduationCap size={19}/></div><div><strong>{school}</strong><small>Tahun ajaran {membership.school?.academic_year}</small></div>{memberships.length>1&&<select className="school-picker" aria-label="Pilih ruang kerja sekolah" value={membership.school_id} onChange={e=>{setActiveSchoolId(e.target.value);void refresh(user,e.target.value)}}>{memberships.map(m=><option key={m.school_id} value={m.school_id}>{m.school?.name||'Sekolah Baru'}</option>)}</select>}</div><div className="nav-scroll">{nav.map(group=><div className="nav-group" key={group.title}><div className="nav-heading">{group.title}</div>{group.items.filter(([key])=>role!=='principal'||['dashboard','analytics','reports','settings'].includes(key)).map(([key,label,Icon])=><button className={`nav-item ${tab===key?'active':''}`} key={key} onClick={()=>{setTab(key);setSearch('');setSelected(null);setSidebar(false)}}><Icon size={18}/><span>{label}</span>{key==='followup'&&due>0&&<i>{due}</i>}</button>)}</div>)}</div><div className="sidebar-bottom"><div className="account-avatar">{membership.display_name.slice(0,1).toUpperCase()}</div><div><strong>{membership.display_name}</strong><small>{role==='owner'?'Admin sekolah':role==='counselor'?'Guru BK':role==='principal'?'Kepala sekolah':'Staf'}</small></div><button className="icon-btn" title="Keluar" onClick={()=>demo?setDemo(false):client?.auth.signOut()}><LogOut size={18}/></button></div></aside>
     <main className="main"><header className="topbar"><div className="top-left"><button className="icon-btn mobile-only" onClick={()=>setSidebar(true)} aria-label="Buka navigasi"><Menu size={21}/></button><div className="crumb">Workspace <span>/</span> <strong>{tabName}</strong></div></div><div className="top-actions"><span className="date-chip"><CalendarDays size={15}/>{dateLabel(today())}</span><button className="icon-btn" aria-label="Ganti tema" onClick={()=>setTheme(theme==='light'?'dark':'light')}>{theme==='light'?<Moon size={19}/>:<Sun size={19}/>}</button><button className="icon-btn alert-btn" aria-label="Tindak lanjut jatuh tempo" onClick={()=>setTab(role==='principal'?'reports':'followup')}><Bell size={19}/>{role!=='principal'&&due>0&&<i/>}</button><span className="top-avatar">{membership.display_name.slice(0,1).toUpperCase()}</span></div></header>
     <div className="content">{demo&&<div className="demo-banner"><CircleHelp size={16}/> Mode demo: data hanya tersimpan selama halaman ini terbuka. Sambungkan Supabase untuk pemakaian sebenarnya.</div>}
       {tab==='dashboard'&&<><div className="hero-card"><div><span className="eyebrow">WORKSPACE BIMBINGAN & KONSELING</span><h1>Selamat datang, {membership.display_name.split(' ')[0]}.</h1><p>Setiap perhatian kecil dapat menjadi langkah besar untuk siswa. Mulai dari yang perlu ditindaklanjuti hari ini.</p>{canEdit&&<button className="btn white" onClick={()=>{setTab('cases');openNew('case')}}><Plus size={17}/> Catat kasus baru</button>}</div><div className="hero-art"><div className="hero-orbit"><HeartHandshake size={62} strokeWidth={1.3}/></div><span className="hero-spark one"/><span className="hero-spark two"/></div></div><div className="section-head"><div><span className="small-tag">RINGKASAN HARI INI</span><h2>Gambaran layanan</h2></div><span className="muted">Data tahun ajaran {membership.school?.academic_year}</span></div><div className="stat-grid"><Stat label="Siswa aktif" value={report.total} icon={<Users/>} tone="violet" description="Terdaftar di sekolah"/><Stat label="Kasus berjalan" value={role==='principal'?Math.max(0,report.handled-report.completed):activeCases.length} icon={<ShieldCheck/>} tone="orange" description="Butuh pemantauan"/><Stat label="Layanan tercatat" value={report.service} icon={<BookOpen/>} tone="blue" description="Semua jenis layanan"/>{role==='principal'?<Stat label="Sesi individu" value={report.sessions} icon={<HeartHandshake/>} tone="pink" description="Data agregat tanpa rincian sesi"/>:<Stat label="Jatuh tempo" value={due} icon={<CalendarDays/>} tone="pink" description="Perlu perhatian hari ini"/>}</div>{role!=='principal'&&<div className="dashboard-grid"><section className="panel"><div className="panel-heading"><div><h3>Kasus terbaru</h3><p>Ikuti perkembangan kasus yang sedang ditangani.</p></div><button className="subtle-link" onClick={()=>setTab('cases')}>Lihat semua <ArrowRight size={15}/></button></div>{cases.length?<div className="stack-list">{cases.slice(0,4).map(c=><div className="list-line" key={c.id}><span className="line-icon"><ShieldCheck size={18}/></span><div><strong>{idName(c.student_id,students)}</strong><small>{c.topic} · {dateLabel(c.opened_on)}</small></div><Pill label={c.status}/></div>)}</div>:<Empty message="Belum ada kasus. Catat kasus pertama untuk memulai."/>}</section><section className="panel"><div className="panel-heading"><div><h3>Akses cepat</h3><p>Langsung ke pekerjaan yang paling sering digunakan.</p></div></div><div className="quick-grid"><Quick icon={<Users/>} title="Tambah siswa" text="Lengkapi data dasar" onClick={()=>{setTab('students');openNew('student')}}/><Quick icon={<HeartHandshake/>} title="Catat konseling" text="Sesi dan tindak lanjut" onClick={()=>{setTab('counseling');openNew('record')}}/><Quick icon={<CalendarDays/>} title="Buat agenda" text="Jadwalkan layanan" onClick={()=>{setTab('agenda');openNew('record')}}/><Quick icon={<BarChart3/>} title="Lihat laporan" text="Ringkasan sekolah" onClick={()=>setTab('reports')}/></div></section></div>}</>}
