@@ -11,3 +11,5 @@
 .brand-logo.small{width:38px;height:38px}
 .auth-story .brand-logo{width:42px;height:42px}
 .setup-card>.brand-logo{width:56px;height:56px;margin-bottom:14px}
+
+.school-picker{width:28px;min-width:28px;border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:12px}.school-picker option{color:var(--ink);background:var(--panel)}
