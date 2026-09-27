@@ -20,4 +20,27 @@ export const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',
 export const dateLabel=(v:string|null|undefined)=>v?new Intl.DateTimeFormat('id-ID',{day:'numeric',month:'short',year:'numeric',timeZone:'Asia/Jakarta'}).format(new Date(v+'T12:00:00+07:00')):'—'
 export const uid=()=>crypto.randomUUID()
 export function csv(rows:Record<string,unknown>[],fields:string[]){return '\ufeff'+[fields.join(','),...rows.map(row=>fields.map(f=>'"'+String(row[f]??'').replaceAll('"','""')+'"').join(','))].join('\r\n')}
+export function parseCsv(text:string){
+  const input=text.replace(/^\ufeff/,'').replace(/^sep=([,;])\r?\n/i,'')
+  const header=input.split(/\r?\n/,1)[0]||''
+  const delimiter=(header.match(/;/g)||[]).length>(header.match(/,/g)||[]).length?';':','
+  const rows:string[][]=[];let row:string[]=[],value='',quoted=false
+  for(let i=0;i<input.length;i++){
+    const char=input[i]
+    if(quoted){
+      if(char==='"'&&input[i+1]==='"'){value+='"';i++}
+      else if(char==='"')quoted=false
+      else value+=char
+    }else if(char==='"'&&value==='')quoted=true
+    else if(char===delimiter){row.push(value);value=''}
+    else if(char==='\r'||char==='\n'){
+      if(char==='\r'&&input[i+1]==='\n')i++
+      row.push(value);if(row.some(cell=>cell.trim()))rows.push(row)
+      row=[];value=''
+    }else value+=char
+  }
+  if(quoted)throw new Error('CSV memiliki tanda kutip yang belum ditutup.')
+  row.push(value);if(row.some(cell=>cell.trim()))rows.push(row)
+  return rows
+}
 export function download(name:string,body:string){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([body],{type:'text/csv;charset=utf-8'}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000)}

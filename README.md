@@ -26,7 +26,7 @@ Deployment Vercel: framework Vite, build command `npm run build`, output directo
 
 ## Format CSV siswa
 
-Header minimal: `NIS,Nama,Kelas`. Opsional: `JK,Wali,Kontak`. NIS dipakai sebagai kunci unik per sekolah. Impor berulang melewati siswa yang sudah ada dan tidak menimpa profil lama. Ekspor mengikuti header yang sama. Arsip tidak menghapus riwayat layanan.
+Unduh `template-siswa-bk-pro.csv` dari halaman Siswa 360° atau buka `/template-siswa-bk-pro.csv`. Header template dan hasil ekspor sama: `NIS,Nama,Kelas,JK,Wali,Kontak,Status`. NIS, Nama, dan Kelas wajib; JK adalah L/P, Status adalah Aktif/Arsip. Format NIS dan Kontak sebagai teks saat mengisi di Excel agar angka nol di depan tetap ada, lalu simpan sebagai CSV UTF-8. Impor berulang melewati NIS yang sudah ada tanpa menimpa profil lama. Ekspor mencakup siswa aktif dan arsip.
 
 ## Akses data
 
