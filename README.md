@@ -51,3 +51,7 @@ Dokumen dicatat sebagai tautan/metadata, belum mempunyai penyimpanan berkas priv
 ## Alur masuk terbaru
 
 Akun baru masuk langsung ke ruang kerja **Sekolah Baru** setelah daftar/login. Pemilik mengubah nama sekolah dan tahun ajaran melalui Pengaturan → Edit profil sekolah. Jika diundang admin, petugas membuka tautan undangan lalu login/daftar; keanggotaan diterima otomatis tanpa mengetik kode. Tautan bersifat sekali pakai dan hanya cocok dengan email tujuan. Jika tautan tidak berlaku, aplikasi menampilkan kesalahan dan tidak membuat ruang kerja lain secara otomatis.
+
+## Navigasi dan panduan
+
+Navigasi utama diringkas menjadi Beranda, Siswa 360°, Penanganan siswa, Layanan & program, Analitik & laporan, Pengaturan, dan Panduan penggunaan. Kelompok dapat dibuka untuk mengakses seluruh modul lama; tidak ada tabel atau catatan yang dihapus. Panduan di dalam aplikasi menjelaskan alur masuk, pengaturan sekolah, impor siswa, kasus, konseling rahasia, program, tindak lanjut, laporan, dan undangan tim sesuai peran pengguna.
