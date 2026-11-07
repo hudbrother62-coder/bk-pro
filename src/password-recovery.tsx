@@ -20,7 +20,7 @@ export default function PasswordRecovery({client}:{client:SupabaseClient|null}){
   const to=email.trim().toLowerCase()
   const key='bb-reset:'+to
   const last=Number(localStorage.getItem(key)||0)
-  if(last&&Date.now()-last<60*60*1000){setNotice('Permintaan sebelumnya masih aktif di browser ini. Periksa kotak masuk dan spam. Tidak meminta kode baru.');setError('');return}
+  if(last&&Date.now()-last<60*1000){setNotice('Permintaan baru saja dibuat. Cek inbox dan spam, atau coba lagi setelah satu menit.');setError('');return}
   setBusy(true);setError('')
   try{
    const {error}=await client.auth.resetPasswordForEmail(to,{redirectTo:location.origin+'/?bbreset=finish'})
