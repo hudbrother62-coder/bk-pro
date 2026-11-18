@@ -65,6 +65,8 @@ export default function App(){
   const [search,setSearch]=useState(''),[classFilter,setClassFilter]=useState('Semua kelas'),[statusFilter,setStatusFilter]=useState('Aktif'),[studentSort,setStudentSort]=useState('name-asc'),[attendanceDate,setAttendanceDate]=useState(today()),[attendanceClass,setAttendanceClass]=useState('Semua kelas'),[attendanceSearch,setAttendanceSearch]=useState(''),[attendanceMap,setAttendanceMap]=useState<Record<string,{status:string;notes:string}>>({}),[attendanceHistory,setAttendanceHistory]=useState<Record<string,Record<string,string>>>({}),[toast,setToast]=useState(''),[busy,setBusy]=useState(false)
   const [sidebar,setSidebar]=useState(false),[expandedNav,setExpandedNav]=useState<string|null>(null),[theme,setTheme]=useState(localStorage.getItem('bk-theme')||'light'),[authEmail,setAuthEmail]=useState(''),[authPassword,setAuthPassword]=useState(''),[authMode,setAuthMode]=useState<'login'|'register'>('login')
   const importRef=useRef<HTMLInputElement>(null)
+  const serviceImportRef=useRef<HTMLInputElement>(null)
+  const [importReport,setImportReport]=useState<{title:string;summary:string;issues:string[]}|null>(null)
   const [checkedStudentIds,setCheckedStudentIds]=useState<string[]>([])
   const [deleteTarget,setDeleteTarget]=useState<{ids:string[];label:string}|null>(null)
   const [deleteVerification,setDeleteVerification]=useState('')
@@ -242,62 +244,119 @@ export default function App(){
   }
   async function invite(e:React.FormEvent){e.preventDefault();if(!membership||!user||!client)return;setBusy(true);const token=Array.from(crypto.getRandomValues(new Uint8Array(32)),x=>x.toString(16).padStart(2,'0')).join('');const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token));const token_hash=Array.from(new Uint8Array(bytes),x=>x.toString(16).padStart(2,'0')).join('');const {error}=await client.from('invitations').insert({school_id:membership.school_id,email:inviteEmail.trim().toLowerCase(),role:inviteRole,invited_by:user.id,token_hash});setBusy(false);if(error)flash(error.message);else{const link=new URL(location.origin);link.searchParams.set('invite',token);setInviteLink(link.toString());flash('Tautan undangan siap dibagikan kepada petugas.')}}
   function exportStudents(){download('bk-pro-siswa.csv',csv(students.map(s=>({NIS:s.nis,Nama:s.name,Kelas:s.class_name,JK:s.gender,Wali:s.guardian_name,Kontak:s.guardian_phone,Status:s.status})),['NIS','Nama','Kelas','JK','Wali','Kontak','Status']))}
+
+  function showImportReport(title:string,saved:number,duplicates:number,issues:string[]){
+    const summary=`${saved} baris berhasil disimpan, ${duplicates} duplikat dilewati, ${issues.length} baris bermasalah.`
+    setImportReport({title,summary,issues});flash(summary)
+  }
   async function importStudents(file:File){
     if(!membership||!client||busy)return
-    setBusy(true)
+    setBusy(true);setImportReport(null)
+    const issues:string[]=[]
+    let inserted=0,duplicates=0
     try{
-      if(!file.name.toLowerCase().endsWith('.csv'))throw new Error('Pilih file CSV dari template yang disediakan.')
+      if(!file.name.toLowerCase().endsWith('.csv'))throw new Error('Pilih CSV UTF-8. Dari Google Sheets: File → Download → CSV.')
       const lines=parseCsv(await file.text())
-      const headers=lines.shift()?.map(x=>x.trim().toLowerCase())||[]
-      if(![['nis','nisn'],['nama','nama siswa','name'],['kelas','class']].every(aliases=>headers.some(h=>aliases.includes(h))))throw new Error('CSV wajib memiliki kolom NIS, Nama, dan Kelas. Unduh template terlebih dahulu.')
-      const get=(row:string[],aliases:string[])=>row[headers.findIndex(h=>aliases.includes(h))]||''
-      const rows=lines.map((row,index)=>{
-        const gender=(get(row,['jk','jenis kelamin','gender']).trim()||'L').toUpperCase()
-        const statusRaw=get(row,['status']).trim().toLowerCase()
+      const headers=lines.shift()?.map(x=>x.trim().toLowerCase().replace(/\s+/g,' '))||[]
+      if(![['nis','nisn'],['nama','nama siswa','name'],['kelas','class']].every(aliases=>headers.some(h=>aliases.includes(h))))throw new Error('CSV wajib memiliki NIS, Nama/Nama Siswa, dan Kelas.')
+      const get=(row:string[],aliases:string[])=>{const i=headers.findIndex(h=>aliases.includes(h));return i<0?'':row[i]||''}
+      type ImportStudent={school_id:string;nis:string;name:string;class_name:string;gender:string;guardian_name:string;guardian_phone:string;status:string;counselor_id:string|null}
+      const unique=new Map<string,ImportStudent>()
+      lines.forEach((row,index)=>{
         const nis=get(row,['nis','nisn']).trim()
         const name=get(row,['nama','nama siswa','name']).trim()
         const class_name=get(row,['kelas','class']).trim()
-        if(!nis||!name||!class_name||!['L','P'].includes(gender)||!['','aktif','arsip'].includes(statusRaw))throw new Error(`Baris ${index+2}: isi NIS, Nama, Kelas; JK hanya L/P dan Status hanya Aktif/Arsip.`)
-        return {
-        school_id:membership.school_id,
-        nis,name,class_name,gender,
-        guardian_name:get(row,['wali','nama orang tua/wali']).trim(),
-        guardian_phone:get(row,['kontak','kontak wali (wa)']).trim(),
-        status:statusRaw==='arsip'?'Arsip':'Aktif',counselor_id:user?.id||null
-      }})
-      if(!rows.length){flash('Template masih kosong. Isi minimal satu siswa sebelum mengimpor.');return}
-      const unique=new Map<string,typeof rows[number]>()
-      for(const row of rows)if(!unique.has(row.nis))unique.set(row.nis,row)
-      const duplicateInFile=rows.length-unique.size
+        const gender=(get(row,['jk','jenis kelamin','gender']).trim()||'L').toUpperCase()
+        const statusRaw=get(row,['status']).trim().toLowerCase()
+        const missing=[!nis?'NIS':null,!name?'Nama Siswa':null,!class_name?'Kelas':null].filter(Boolean).join(', ')
+        if(missing){issues.push(`Baris ${index+2} (NIS ${nis||'kosong'}): ${missing} kosong. Periksa DATA_SISWA atau rumus INDEX/MATCH.`);return}
+        if(!['L','P'].includes(gender)||!['','aktif','arsip'].includes(statusRaw)){issues.push(`Baris ${index+2} (NIS ${nis}): JK harus L/P dan Status harus Aktif/Arsip.`);return}
+        if(unique.has(nis)){duplicates++;return}
+        unique.set(nis,{school_id:membership.school_id,nis,name,class_name,gender,guardian_name:get(row,['wali','nama orang tua/wali']).trim(),guardian_phone:get(row,['kontak','kontak wali (wa)']).trim(),status:statusRaw==='arsip'?'Arsip':'Aktif',counselor_id:user?.id||null})
+      })
+      const rows=[...unique.values()]
+      if(!rows.length){showImportReport('Impor siswa',0,duplicates,issues.length?issues:['Tidak ada baris siswa yang valid.']);return}
       if(demo){
-        const current=new Set(students.map(s=>s.nis))
-        const fresh=[...unique.values()].filter(x=>!current.has(x.nis))
-        setStudents(p=>[...p,...fresh.map(x=>({...x,id:uid(),created_at:new Date().toISOString()}))])
-        flash(fresh.length+' siswa diimpor dalam demo; '+(rows.length-fresh.length)+' duplikat dilewati.')
+        const existing=new Set(students.map(s=>s.nis))
+        const fresh=rows.filter(r=>!existing.has(r.nis))
+        duplicates+=rows.length-fresh.length
+        setStudents(p=>[...p,...fresh.map(r=>({...r,id:uid(),created_at:new Date().toISOString()}))])
+        showImportReport('Impor siswa (demo)',fresh.length,duplicates,issues)
         return
       }
-      // Read the entire NIS index: never upsert and silently replace an existing student's profile.
       const existing=new Set<string>()
-      let offset=0
-      while(true){
+      for(let offset=0;;offset+=1000){
         const {data,error}=await client.from('students').select('nis').eq('school_id',membership.school_id).order('nis').range(offset,offset+999)
         if(error)throw error
-        for(const x of data||[])existing.add(x.nis)
+        for(const row of data||[])existing.add(row.nis)
         if((data||[]).length<1000)break
-        offset+=1000
       }
-      const fresh=[...unique.values()].filter(x=>!existing.has(x.nis))
-      if(!fresh.length){flash('Tidak ada siswa baru. '+rows.length+' baris sudah ada/duplikat; data lama tidak diubah.');return}
-      let inserted=0
+      const fresh=rows.filter(r=>!existing.has(r.nis))
+      duplicates+=rows.length-fresh.length
       for(let offset=0;offset<fresh.length;offset+=200){
         const {error}=await client.from('students').insert(fresh.slice(offset,offset+200))
-        if(error)throw new Error(error.message+' ('+inserted+' siswa baru sudah tersimpan; periksa sebelum mengulangi impor)')
+        if(error)throw new Error(`Gagal menyimpan batch berikutnya: ${error.message}`)
         inserted+=Math.min(200,fresh.length-offset)
       }
-      await refresh()
-      flash(inserted+' siswa baru diimpor. '+(duplicateInFile+(unique.size-fresh.length))+' duplikat dilewati; data lama tidak ditimpa.')
-    }catch(e:any){flash(e?.message||'Impor gagal. Data siswa lama tidak diubah.')}
-    finally{setBusy(false)}
+      if(inserted)await refresh()
+      showImportReport('Impor siswa',inserted,duplicates,issues)
+    }catch(e:any){
+      if(inserted)await refresh()
+      setImportReport({title:'Impor siswa belum selesai',summary:`${inserted} siswa telah disimpan. Periksa kesalahan sebelum mengimpor ulang.`,issues:[e?.message||'Impor gagal.',...issues]})
+      flash('Impor belum selesai. Lihat laporan di atas tabel siswa.')
+    }finally{setBusy(false)}
+  }
+  function parseBkDate(value:string){
+    const raw=value.trim()
+    const match=raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
+    const iso=match?`${match[3]}-${match[2].padStart(2,'0')}-${match[1].padStart(2,'0')}`:raw
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(iso))return ''
+    const date=new Date(iso+'T12:00:00Z')
+    return !Number.isNaN(date.getTime())&&date.toISOString().slice(0,10)===iso?iso:''
+  }
+  async function importServiceRecords(file:File){
+    if(!membership||!client||!user||busy||!canEdit)return
+    setBusy(true);setImportReport(null)
+    const issues:string[]=[]
+    let inserted=0,duplicates=0
+    try{
+      if(!file.name.toLowerCase().endsWith('.csv'))throw new Error('Unduh sheet Layanan BK sebagai CSV UTF-8 terlebih dahulu.')
+      const rows=parseCsv(await file.text())
+      const headers=rows.shift()?.map(h=>h.trim().toLowerCase().replace(/\s+/g,' '))||[]
+      if(!headers.includes('nis')||!headers.includes('tanggal'))throw new Error('CSV Layanan BK wajib berisi kolom NIS dan Tanggal.')
+      const get=(row:string[],aliases:string[])=>{const i=headers.findIndex(h=>aliases.includes(h));return i<0?'':row[i]||''}
+      const studentByNis=new Map(students.map(s=>[s.nis.trim(),s]))
+      const existing=new Set(records.filter(r=>r.kind===tab).map(r=>r.details?.import_signature).filter(Boolean))
+      const seen=new Set<string>()
+      const payloads:Array<{school_id:string;student_id:string;case_id:null;counselor_id:string;kind:string;happened_on:string;title:string;domain:string;status:string;notes:string;confidential:boolean;details:Record<string,string>}>=[]
+      rows.forEach((row,index)=>{
+        const nis=get(row,['nis','nisn']).trim(),date=parseBkDate(get(row,['tanggal','tanggal layanan','tgl']))
+        const student=studentByNis.get(nis)
+        const title=get(row,['topik','topik layanan','topik permasalahan','topik/masalah','permasalahan','materi','materi layanan','judul']).trim()
+        const component=get(row,['komponen layanan','komponen']).trim()
+        const teacher=get(row,['guru bk','guru pembimbing','konselor']).trim()
+        const originalDomain=get(row,['bidang','bidang layanan']).trim()
+        const notes=get(row,['catatan','keterangan','hasil layanan','hasil','tindak lanjut']).trim()
+        const reasons=[!nis?'NIS kosong':null,!student&&nis?'NIS belum ada di Siswa 360°':null,!date?'Tanggal tidak valid':null,!title?'Topik kosong':null].filter(Boolean)
+        if(reasons.length){issues.push(`Baris ${index+2} (NIS ${nis||'kosong'}): ${reasons.join(', ')}.`);return}
+        if(!student)return
+        const signature=[tab,nis,date,title.toLowerCase(),component.toLowerCase(),teacher.toLowerCase(),notes.toLowerCase()].join('|')
+        if(seen.has(signature)||existing.has(signature)){duplicates++;return}
+        seen.add(signature)
+        payloads.push({school_id:membership.school_id,student_id:student.id,case_id:null,counselor_id:user.id,kind:tab,happened_on:date,title,domain:domains.find(d=>d.toLowerCase()===originalDomain.toLowerCase())||'Pribadi',status:'Selesai',notes,confidential:tab==='counseling'||tab==='visit',details:{component,guru_bk:teacher,original_domain:originalDomain,import_signature:signature,import_source:'CSV Layanan BK'}})
+      })
+      for(let offset=0;offset<payloads.length;offset+=100){
+        const {error}=await client.from('bk_records').insert(payloads.slice(offset,offset+100))
+        if(error)throw new Error(`Gagal menyimpan batch berikutnya: ${error.message}`)
+        inserted+=Math.min(100,payloads.length-offset)
+      }
+      if(inserted)await refresh()
+      showImportReport('Impor riwayat layanan BK',inserted,duplicates,issues)
+    }catch(e:any){
+      if(inserted)await refresh()
+      setImportReport({title:'Impor layanan BK belum selesai',summary:`${inserted} catatan berhasil disimpan.`,issues:[e?.message||'Impor gagal.',...issues]})
+      flash('Impor layanan BK belum selesai. Lihat laporan hasil.')
+    }finally{setBusy(false)}
   }
   const report=useMemo(()=>({total:remoteReport?.students??students.filter(s=>s.status==='Aktif').length,handled:remoteReport?.cases??cases.length,completed:remoteReport?.completed??cases.filter(c=>c.status==='Selesai').length,sessions:remoteReport?.sessions??records.filter(r=>r.kind==='counseling').length,service:remoteReport?.services??records.length,domain:domains.map(d=>({name:d,count:remoteReport?.domains?.[d]??cases.filter(c=>c.domain===d).length}))}),[students,cases,records,remoteReport])
   if(boot)return <div className="center-screen"><div className="loader"/>Memuat BK Pro…</div>
@@ -316,6 +375,7 @@ export default function App(){
     })}</div><div className="sidebar-bottom"><div className="account-avatar">{membership.display_name.slice(0,1).toUpperCase()}</div><div><strong>{membership.display_name}</strong><small>{role==='owner'?'Admin sekolah':role==='counselor'?'Guru BK':role==='principal'?'Kepala sekolah':'Staf'}</small></div><button className="icon-btn" title="Keluar" onClick={()=>demo?setDemo(false):client?.auth.signOut()}><LogOut size={18}/></button></div></aside>
     <main className="main"><header className="topbar"><div className="top-left"><button className="icon-btn mobile-only" onClick={()=>setSidebar(true)} aria-label="Buka navigasi"><Menu size={21}/></button><div className="crumb">Workspace <span>/</span> <strong>{tabName}</strong></div></div><div className="top-actions"><span className="date-chip"><CalendarDays size={15}/>{dateLabel(today())}</span><button className="icon-btn" aria-label="Ganti tema" onClick={()=>setTheme(theme==='light'?'dark':'light')}>{theme==='light'?<Moon size={19}/>:<Sun size={19}/>}</button><button className="icon-btn alert-btn" aria-label="Tindak lanjut jatuh tempo" onClick={()=>setTab(role==='principal'?'reports':'followup')}><Bell size={19}/>{role!=='principal'&&due>0&&<i/>}</button><span className="top-avatar">{membership.display_name.slice(0,1).toUpperCase()}</span></div></header>
     <div className="content">{demo&&<div className="demo-banner"><CircleHelp size={16}/> Mode demo: data hanya tersimpan selama halaman ini terbuka. Sambungkan Supabase untuk pemakaian sebenarnya.</div>}
+      {importReport&&((tab==='students'&&importReport.title.includes('siswa'))||(kinds.some(([key])=>key===tab)&&importReport.title.includes('layanan')))&&<section className="panel" role="status" style={{padding:16,marginBottom:16}}><div className="panel-heading"><div><h3>{importReport.title}</h3><p>{importReport.summary}</p></div><button className="btn secondary" type="button" onClick={()=>setImportReport(null)}>Tutup</button></div>{importReport.issues.length>0&&<><p>Baris berikut tidak diimpor. Perbaiki sumber lalu impor ulang; data yang sudah masuk tidak ditimpa.</p><ul>{importReport.issues.slice(0,12).map((item,i)=><li key={i}>{item}</li>)}</ul>{importReport.issues.length>12&&<p>Dan {importReport.issues.length-12} baris bermasalah lainnya.</p>}<button className="btn secondary" type="button" onClick={()=>download('laporan-impor-bk-pro.csv',csv(importReport.issues.map(message=>({Masalah:message})),['Masalah']))}><Download size={15}/> Unduh laporan lengkap</button></>}</section>}
       {tab==='dashboard'&&<><div className="hero-card"><div><span className="eyebrow">WORKSPACE BIMBINGAN & KONSELING</span><h1>Selamat datang, {membership.display_name.split(' ')[0]}.</h1><p>Setiap perhatian kecil dapat menjadi langkah besar untuk siswa. Mulai dari yang perlu ditindaklanjuti hari ini.</p>{canEdit&&<button className="btn white" onClick={()=>{setTab('cases');openNew('case')}}><Plus size={17}/> Catat kasus baru</button>}</div><div className="hero-art"><div className="hero-orbit"><HeartHandshake size={62} strokeWidth={1.3}/></div><span className="hero-spark one"/><span className="hero-spark two"/></div></div><div className="section-head"><div><span className="small-tag">RINGKASAN HARI INI</span><h2>Gambaran layanan</h2></div><span className="muted">Data tahun ajaran {membership.school?.academic_year}</span></div><div className="stat-grid"><Stat label="Siswa aktif" value={report.total} icon={<Users/>} tone="violet" description="Terdaftar di sekolah"/><Stat label="Kasus berjalan" value={role==='principal'?Math.max(0,report.handled-report.completed):activeCases.length} icon={<ShieldCheck/>} tone="orange" description="Butuh pemantauan"/><Stat label="Layanan tercatat" value={report.service} icon={<BookOpen/>} tone="blue" description="Semua jenis layanan"/>{role==='principal'?<Stat label="Sesi individu" value={report.sessions} icon={<HeartHandshake/>} tone="pink" description="Data agregat tanpa rincian sesi"/>:<Stat label="Jatuh tempo" value={due} icon={<CalendarDays/>} tone="pink" description="Perlu perhatian hari ini"/>}</div>{role!=='principal'&&<div className="dashboard-grid"><section className="panel"><div className="panel-heading"><div><h3>Kasus terbaru</h3><p>Ikuti perkembangan kasus yang sedang ditangani.</p></div><button className="subtle-link" onClick={()=>setTab('cases')}>Lihat semua <ArrowRight size={15}/></button></div>{cases.length?<div className="stack-list">{cases.slice(0,4).map(c=><div className="list-line" key={c.id}><span className="line-icon"><ShieldCheck size={18}/></span><div><strong>{idName(c.student_id,students)}</strong><small>{c.topic} · {dateLabel(c.opened_on)}</small></div><Pill label={c.status}/></div>)}</div>:<Empty message="Belum ada kasus. Catat kasus pertama untuk memulai."/>}</section><section className="panel"><div className="panel-heading"><div><h3>Akses cepat</h3><p>Langsung ke pekerjaan yang paling sering digunakan.</p></div></div><div className="quick-grid"><Quick icon={<Users/>} title="Tambah siswa" text="Lengkapi data dasar" onClick={()=>{setTab('students');openNew('student')}}/><Quick icon={<HeartHandshake/>} title="Catat konseling" text="Sesi dan tindak lanjut" onClick={()=>{setTab('counseling');openNew('record')}}/><Quick icon={<CalendarDays/>} title="Buat agenda" text="Jadwalkan layanan" onClick={()=>{setTab('agenda');openNew('record')}}/><Quick icon={<BarChart3/>} title="Lihat laporan" text="Ringkasan sekolah" onClick={()=>setTab('reports')}/></div></section></div>}</>}
       {tab==='students'&&<><PageTitle kicker="DATA SISWA" title="Siswa 360°" description="Cari, urutkan, dan kelola profil siswa dalam satu daftar." action={canEdit?<button className="btn primary" onClick={()=>openNew('student')}><Plus size={17}/> Tambah siswa</button>:null}/><div className="toolbar"><div className="search-box"><Search size={18}/><input aria-label="Cari siswa" placeholder="Cari nama, NIS, atau kelas…" value={search} onChange={e=>setSearch(e.target.value)}/></div><select aria-label="Filter kelas" value={classFilter} onChange={e=>setClassFilter(e.target.value)}><option>Semua kelas</option>{classes.map(c=><option key={c}>{c}</option>)}</select><div className="filter-segments" role="group" aria-label="Daftar siswa"><button className={statusFilter==='Aktif'?'selected':''} onClick={()=>setStatusFilter('Aktif')}>Aktif <span>{activeStudentCount}</span></button><button className={statusFilter==='Arsip'?'selected':''} onClick={()=>setStatusFilter('Arsip')}>Arsip <span>{archivedStudentCount}</span></button><button className={statusFilter==='Semua'?'selected':''} onClick={()=>setStatusFilter('Semua')}>Semua</button></div><select aria-label="Urutkan siswa" value={studentSort} onChange={e=>setStudentSort(e.target.value)}><option value="name-asc">Nama A–Z</option><option value="name-desc">Nama Z–A</option><option value="class">Kelas</option></select><button className="btn secondary" onClick={exportStudents}><Download size={16}/> Ekspor CSV</button>{canEdit&&<><a className="btn secondary" href="/template-siswa-bk-pro.csv" download="template-siswa-bk-pro.csv"><FileText size={16}/> Unduh template</a><button className="btn secondary" onClick={()=>importRef.current?.click()}><Upload size={16}/> Impor CSV</button><input type="file" ref={importRef} accept=".csv,text/csv" hidden onChange={e=>{if(e.target.files?.[0])void importStudents(e.target.files[0]);e.target.value=''}}/></>}</div>{canEdit&&<div className="bulk-student-toolbar"><label className="bulk-select-all"><input type="checkbox" checked={allVisibleChecked} disabled={busy||sortedStudents.length===0} onChange={e=>{const visible=sortedStudents.map(s=>s.id);setCheckedStudentIds(old=>e.target.checked?Array.from(new Set([...old,...visible])):old.filter(id=>!visible.includes(id)))}}/> Pilih semua hasil filter ({sortedStudents.length})</label><span>{checkedStudents.length} dipilih</span><button type="button" className="btn danger" disabled={busy||checkedStudents.length===0} onClick={()=>askDeleteStudents(checkedStudents,checkedStudents.length+' siswa terpilih')}><Trash2 size={15}/> Hapus terpilih</button>{classDeleteCandidates.length>0&&<button type="button" className="btn secondary delete-class-btn" disabled={busy} onClick={()=>askDeleteStudents(classDeleteCandidates,'seluruh siswa kelas '+classFilter)}><Trash2 size={15}/> Hapus kelas {classFilter} ({classDeleteCandidates.length})</button>}</div>}<p className="import-hint">Impor menambahkan NIS baru; data yang sudah ada tidak ditimpa. Ekspor mengikuti daftar lengkap sekolah, termasuk siswa yang sedang tidak cocok dengan filter.</p><div className="panel table-panel"><div className="table-caption"><strong>{sortedStudents.length} dari {students.length} siswa</strong><span>Klik siswa untuk melihat riwayat, mengedit profil, atau mengarsipkan.</span></div><div className="table-wrap"><table><thead><tr>{canEdit&&<th className="student-check-cell">Pilih</th>}<th>Siswa</th><th>NIS</th><th>Kelas</th><th>Wali</th><th>Status</th><th></th></tr></thead><tbody>{sortedStudents.map(s=><tr key={s.id} onClick={()=>setSelected(s)}>{canEdit&&<td className="student-check-cell" onClick={e=>e.stopPropagation()}><input type="checkbox" aria-label={'Pilih '+s.name} disabled={busy} checked={checkedStudentIds.includes(s.id)} onChange={e=>setCheckedStudentIds(old=>e.target.checked?[...old.filter(id=>id!==s.id),s.id]:old.filter(id=>id!==s.id))}/></td>}<td><div className="person"><span className="person-avatar">{s.name.slice(0,1)}</span><strong>{s.name}</strong></div></td><td>{s.nis}</td><td>{s.class_name}</td><td>{s.guardian_name||'—'}</td><td><Pill label={s.status}/></td><td><div className="student-row-actions"><ArrowRight size={16}/>{canEdit&&<button type="button" className="row-delete" title={'Hapus '+s.name} aria-label={'Hapus '+s.name} disabled={busy} onClick={e=>{e.stopPropagation();askDeleteStudents([s],s.name)}}><Trash2 size={15}/></button>}</div></td></tr>)}</tbody></table></div>{!sortedStudents.length&&<Empty message={statusFilter==='Arsip'?'Belum ada siswa di arsip. Siswa yang diarsipkan akan muncul di sini dan dapat dipulihkan.':'Belum ada siswa sesuai pencarian atau filter. Tambahkan siswa atau sesuaikan filter.'}/>}</div></>}
       {tab==='attendance'&&<>
@@ -342,7 +402,7 @@ export default function App(){
         </div>
       </>}
       {tab==='cases'&&<><PageTitle kicker="PENANGANAN KASUS" title="Kasus & asesmen" description="Alur kasus dari identifikasi hingga evaluasi dan status akhir." action={canEdit?<button className="btn primary" onClick={()=>openNew('case')}><Plus size={17}/> Kasus baru</button>:null}/><div className="toolbar"><div className="search-box"><Search size={18}/><input placeholder="Cari siswa, kode, topik…" value={search} onChange={e=>setSearch(e.target.value)}/></div><span className="toolbar-count">{activeCases.length} kasus berjalan</span></div><div className="case-grid">{visibleCases.map(c=><article className="case-card" key={c.id} onClick={()=>canEdit&&c.counselor_id===user?.id&&editCase(c)}><div className="case-top"><span className="case-code">{c.code}</span><Pill label={c.status}/></div><h3>{c.topic}</h3><div className="case-student"><span className="person-avatar mini">{idName(c.student_id,students).slice(0,1)}</span>{idName(c.student_id,students)} <span>· {students.find(s=>s.id===c.student_id)?.class_name}</span></div><div className="case-divider"/><div className="case-meta"><span>{c.domain} · {c.priority}</span><span>{dateLabel(c.opened_on)}</span></div>{c.next_on&&<div className="next-call">Tindak lanjut: {dateLabel(c.next_on)}</div>}</article>)}</div>{!visibleCases.length&&<div className="panel"><Empty message="Belum ada kasus. Buat kasus baru untuk mulai mencatat penanganan."/></div>}</>}
-      {kinds.some(([key])=>key===tab)&&<><PageTitle kicker="CATATAN LAYANAN" title={tabName} description={tab==='counseling'?'Catatan sesi bersifat rahasia dan hanya dapat dibuka petugas berwenang.':'Rencanakan, catat, dan evaluasi kegiatan bimbingan konseling.'} action={canEdit?<button className="btn primary" onClick={()=>openNew('record')}><Plus size={17}/> Tambah catatan</button>:null}/><div className="toolbar"><div className="search-box"><Search size={18}/><input placeholder="Cari judul atau siswa…" value={search} onChange={e=>setSearch(e.target.value)}/></div><span className="toolbar-count">{visibleRecords.length} catatan</span></div><div className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Judul / topik</th><th>Siswa / sasaran</th><th>Tanggal</th><th>Bidang</th><th>Status</th><th></th></tr></thead><tbody>{visibleRecords.map(r=><tr key={r.id} onClick={()=>canEdit&&r.counselor_id===user?.id&&editRecord(r)}><td><strong>{r.title}</strong>{r.confidential&&<small className="confidential"><LockKeyhole size={12}/> Terbatas</small>}</td><td>{idName(r.student_id,students)}</td><td>{dateLabel(r.happened_on)}</td><td>{r.domain}</td><td><Pill label={r.status}/></td><td><ArrowRight size={16}/></td></tr>)}</tbody></table></div>{!visibleRecords.length&&<Empty message={`Belum ada catatan ${tabName.toLowerCase()}.`}/>}</div></>}
+      {kinds.some(([key])=>key===tab)&&<><PageTitle kicker="CATATAN LAYANAN" title={tabName} description={tab==='counseling'?'Catatan sesi bersifat rahasia dan hanya dapat dibuka petugas berwenang.':'Rencanakan, catat, dan evaluasi kegiatan bimbingan konseling.'} action={canEdit?<button className="btn primary" onClick={()=>openNew('record')}><Plus size={17}/> Tambah catatan</button>:null}/><div className="toolbar"><div className="search-box"><Search size={18}/><input placeholder="Cari judul atau siswa…" value={search} onChange={e=>setSearch(e.target.value)}/></div><span className="toolbar-count">{visibleRecords.length} catatan</span>{canEdit&&<><button className="btn secondary" type="button" disabled={busy} onClick={()=>serviceImportRef.current?.click()}><Upload size={16}/> Impor CSV Layanan BK</button><input type="file" accept=".csv,text/csv" hidden ref={serviceImportRef} onChange={e=>{if(e.target.files?.[0])void importServiceRecords(e.target.files[0]);e.target.value=''}}/></>}</div><div className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Judul / topik</th><th>Siswa / sasaran</th><th>Tanggal</th><th>Bidang</th><th>Status</th><th></th></tr></thead><tbody>{visibleRecords.map(r=><tr key={r.id} onClick={()=>canEdit&&r.counselor_id===user?.id&&editRecord(r)}><td><strong>{r.title}</strong>{r.confidential&&<small className="confidential"><LockKeyhole size={12}/> Terbatas</small>}</td><td>{idName(r.student_id,students)}</td><td>{dateLabel(r.happened_on)}</td><td>{r.domain}</td><td><Pill label={r.status}/></td><td><ArrowRight size={16}/></td></tr>)}</tbody></table></div>{!visibleRecords.length&&<Empty message={`Belum ada catatan ${tabName.toLowerCase()}.`}/>}</div></>}
       {tab==='analytics'&&<><PageTitle kicker="POLA & PERKEMBANGAN" title="Analitik BK" description="Kenali kebutuhan siswa dari catatan layanan, tanpa membuka isi sesi rahasia."/><div className="stat-grid"><Stat label="Siswa aktif" value={report.total} icon={<Users/>} tone="violet" description="Basis peserta didik"/><Stat label="Kasus selesai" value={report.completed} icon={<Check/>} tone="blue" description="Dituntaskan"/><Stat label="Sesi individu" value={report.sessions} icon={<HeartHandshake/>} tone="orange" description="Konseling tercatat"/><Stat label="Layanan kelompok" value={report.service} icon={<BookOpen/>} tone="pink" description="Kelompok & klasikal"/></div><div className="panel chart-panel"><h3>Distribusi bidang kasus</h3><p className="muted">Jumlah kasus menurut bidang layanan.</p>{report.domain.map(item=><div className="bar-row" key={item.name}><strong>{item.name}</strong><div className="bar-track"><span style={{width:`${Math.max(item.count?5:0,item.count/Math.max(1,report.handled)*100)}%`}}/></div><b>{item.count}</b></div>)}</div></>}
       {tab==='reports'&&<><PageTitle kicker="LAPORAN SEKOLAH" title="Laporan BK" description="Ringkasan agregat untuk kepala sekolah, tanpa nama siswa atau isi sesi konseling." action={<button className="btn primary" onClick={()=>window.print()}><Download size={17}/> Cetak / simpan PDF</button>}/><section className="panel report-card"><div className="report-header"><img className="brand-logo small" src="/bantu-beres-logo.png" alt="Logo Bantu Beres"/><div><h2>Laporan layanan bimbingan & konseling</h2><p>{school} · Tahun ajaran {membership.school?.academic_year}</p></div></div><div className="report-metrics"><div><span>Siswa aktif</span><strong>{report.total}</strong></div><div><span>Total kasus</span><strong>{report.handled}</strong></div><div><span>Kasus selesai</span><strong>{report.completed}</strong></div><div><span>Layanan tercatat</span><strong>{report.service}</strong></div></div><h3>Bidang penanganan</h3>{report.domain.map(d=><div className="report-line" key={d.name}><span>{d.name}</span><strong>{d.count} kasus</strong></div>)}<p className="report-foot">Dibuat pada {dateLabel(today())}. Data individu dan isi konseling tidak disertakan.</p></section></>}
       {tab==='settings'&&<><PageTitle kicker="PENGATURAN" title="Ruang kerja sekolah" description="Informasi sekolah, akses tim, dan preferensi tampilan."/><div className="settings-grid"><section className="panel setting-card"><h3>Profil sekolah</h3><p className="muted">Data dasar ruang kerja aktif.</p><div className="setting-row"><span>Nama sekolah</span><strong>{school}</strong></div><div className="setting-row"><span>Tahun ajaran</span><strong>{membership.school?.academic_year}</strong></div><div className="setting-row"><span>Peran akun</span><strong>{role}</strong></div>{role==='owner'&&<button className="btn secondary" onClick={()=>{setSchoolName(membership.school?.name||'Sekolah Baru');setAcademicYear(membership.school?.academic_year||'2026/2027');setModal('school')}}>Edit profil sekolah</button>}</section><section className="panel setting-card"><h3>Akses & tampilan</h3><p className="muted">Undang tim dan sesuaikan kenyamanan membaca.</p><div className="setting-row"><span>Tema tampilan</span><button className="btn secondary" onClick={()=>setTheme(theme==='light'?'dark':'light')}>{theme==='light'?'Terang':'Gelap'} <Sun size={15}/></button></div>{isManager&&<div className="setting-row"><span>Guru BK / kepala sekolah</span><button className="btn secondary" onClick={()=>openNew('invite')}><Plus size={15}/> Undang petugas</button></div>}<div className="privacy-note"><LockKeyhole size={17}/> Kepala sekolah melihat ringkasan agregat. Catatan sesi sensitif dibatasi untuk guru BK yang menangani.</div></section></div></>}
