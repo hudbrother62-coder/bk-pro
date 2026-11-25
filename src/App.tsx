@@ -52,6 +52,113 @@ const fieldMap:Record<string,{label:string;key:string;placeholder?:string}[]>={
   document:[{label:'Jenis dokumen',key:'document_type'},{label:'Tautan dokumen (akses terbatas)',key:'url'}]
 }
 const idName=(id:string|null,students:Student[])=>students.find(s=>s.id===id)?.name||'Umum / kelompok'
+
+const studentHeaders={
+  nis:['nis','nisn','nomor induk','nomor induk siswa','no induk','no induk siswa','nomor induk siswa nasional'],
+  name:['nama','nama siswa','nama lengkap','nama lengkap siswa','nama peserta didik','peserta didik','name'],
+  class_name:['kelas','class','rombel','nama kelas','rombongan belajar','kelas rombel'],
+  gender:['jk','jenis kelamin','gender','l p','lp'],
+  guardian_name:['wali','nama wali','nama orang tua','nama orang tua wali','orang tua wali','nama ayah','nama orangtua wali'],
+  guardian_phone:['kontak','kontak wali wa','nomor whatsapp','no whatsapp','no hp','nomor hp','no telepon','nomor telepon','no wa','nomor wa','telepon wali','kontak wali'],
+  status:['status','status siswa']
+}
+const studentHeader=(v:string)=>v.replace(/^\ufeff/,'').normalize('NFKC').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()
+function studentColumns(row:string[]){
+  const normalized=row.map(studentHeader)
+  const find=(aliases:string[])=>aliases.map(a=>normalized.indexOf(a)).find(i=>i>=0)??-1
+  return Object.fromEntries(Object.entries(studentHeaders).map(([k,v])=>[k,find(v)]))
+}
+function studentHeaderIndex(rows:string[][]){
+  return rows.slice(0,50).findIndex(row=>{const h=studentColumns(row);return h.nis>=0&&h.name>=0&&h.class_name>=0})
+}
+async function readStudentRows(file:File):Promise<string[][]>{
+  if(file.size>25*1024*1024)throw new Error('Ukuran file maksimal 25 MB.')
+  const bytes=new Uint8Array(await file.arrayBuffer())
+  if(/\.csv$|\.tsv$|\.txt$/i.test(file.name)){
+    const encoding=bytes[0]===255&&bytes[1]===254?'utf-16le':bytes[0]===254&&bytes[1]===255?'utf-16be':'utf-8'
+    let input=new TextDecoder(encoding).decode(bytes)
+    if(encoding==='utf-8'&&input.includes('\ufffd'))input=new TextDecoder('windows-1252').decode(bytes)
+    if(input.includes('\0'))throw new Error('File bukan CSV teks yang valid.')
+    if(input.split(/\r?\n/).slice(0,50).some(line=>line.includes('\t')&&studentHeaderIndex([line.split('\t')])===0))return input.split(/\r?\n/).map(line=>line.split('\t'))
+    // Export Indonesia often uses semicolons, including after a title row.
+    const candidates=input.replace(/^\ufeff/,'').split(/\r?\n/)
+    const headerAt=candidates.slice(0,50).findIndex(line=>[',',';'].some(d=>studentHeaderIndex([line.split(d).map(s=>s.replace(/^"|"$/g,''))])===0))
+    if(headerAt>=0)return [...Array.from({length:headerAt},()=>[] as string[]),...parseCsv(candidates.slice(headerAt).join('\n'))]
+    return parseCsv(input)
+  }
+  if(!/\.xlsx$/i.test(file.name))throw new Error('Gunakan file Excel .xlsx atau CSV. Untuk .xls lama, simpan ulang sebagai .xlsx.')
+  const dv=new DataView(bytes.buffer)
+  let end=-1
+  for(let p=bytes.length-22;p>=Math.max(0,bytes.length-65557);p--){if(dv.getUint32(p,true)===0x06054b50&&p+22+dv.getUint16(p+20,true)===bytes.length){end=p;break}}
+  if(end<0)throw new Error('File Excel rusak atau tidak valid.')
+  const entries=new Map<string,{method:number;size:number;offset:number;compressed:number}>()
+  const count=dv.getUint16(end+10,true)
+  let p=dv.getUint32(end+16,true)
+  for(let i=0;i<count;i++){
+    if(p+46>bytes.length||dv.getUint32(p,true)!==0x02014b50)throw new Error('Struktur Excel tidak valid.')
+    const flags=dv.getUint16(p+8,true),method=dv.getUint16(p+10,true),compressed=dv.getUint32(p+20,true),size=dv.getUint32(p+24,true),n=dv.getUint16(p+28,true),extra=dv.getUint16(p+30,true),comment=dv.getUint16(p+32,true),offset=dv.getUint32(p+42,true)
+    if(p+46+n+extra+comment>bytes.length||flags&1)throw new Error('Excel terenkripsi atau rusak.')
+    entries.set(new TextDecoder().decode(bytes.subarray(p+46,p+46+n)),{method,size,offset,compressed})
+    p+=46+n+extra+comment
+  }
+  let expanded=0
+  async function xml(path:string){
+    const e=entries.get(path)
+    if(!e)throw new Error('Bagian Excel tidak ditemukan: '+path)
+    if(e.size>40*1024*1024||expanded+e.size>80*1024*1024||e.offset+30>bytes.length||dv.getUint32(e.offset,true)!==0x04034b50)throw new Error('Isi Excel terlalu besar atau tidak valid.')
+    const start=e.offset+30+dv.getUint16(e.offset+26,true)+dv.getUint16(e.offset+28,true)
+    if(start+e.compressed>bytes.length)throw new Error('Isi Excel terpotong.')
+    const part=bytes.slice(start,start+e.compressed)
+    let result:Uint8Array=part
+    if(e.method===8){
+      const reader=new Blob([part]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader()
+      const chunks:Uint8Array[]=[];let total=0
+      try{while(true){const {done,value}=await reader.read();if(done)break;if(value){total+=value.byteLength;if(total>e.size||total>40*1024*1024){await reader.cancel();throw new Error('Ukuran isi Excel tidak valid.')}chunks.push(value)}}}finally{reader.releaseLock()}
+      result=new Uint8Array(total);let at=0;for(const chunk of chunks){result.set(chunk,at);at+=chunk.length}
+    }else if(e.method!==0)throw new Error('Kompresi Excel tidak didukung.')
+    if(result.length!==e.size)throw new Error('Isi Excel tidak lengkap.')
+    expanded+=result.length
+    const doc=new DOMParser().parseFromString(new TextDecoder().decode(result),'application/xml')
+    if(doc.getElementsByTagName('parsererror').length)throw new Error('XML Excel tidak valid.')
+    return doc
+  }
+  const tags=(node:Document|Element,name:string)=>Array.from(node.getElementsByTagNameNS('*',name))
+  const shared=entries.has('xl/sharedStrings.xml')?tags(await xml('xl/sharedStrings.xml'),'si').map(s=>tags(s,'t').map(t=>t.textContent||'').join('')):[]
+  const workbook=await xml('xl/workbook.xml'),rels=await xml('xl/_rels/workbook.xml.rels')
+  const styles=entries.has('xl/styles.xml')?await xml('xl/styles.xml'):null
+  const formats=new Map(styles?tags(styles,'numFmt').map(n=>[n.getAttribute('numFmtId'),n.getAttribute('formatCode')||'']):[])
+  const xfs=styles?tags(styles,'cellXfs')[0]:null
+  const numberFormats=xfs?Array.from(xfs.children).map(x=>formats.get(x.getAttribute('numFmtId'))||''):[]
+  const paths=new Map(tags(rels,'Relationship').filter(x=>x.getAttribute('TargetMode')!=='External').map(x=>[x.getAttribute('Id'),x.getAttribute('Target')||'']))
+  const sheets=tags(workbook,'sheet').filter(x=>x.getAttribute('state')!=='hidden'&&x.getAttribute('state')!=='veryHidden').sort((a,b)=>Number(/data.?siswa|master.?siswa/i.test(b.getAttribute('name')||''))-Number(/data.?siswa|master.?siswa/i.test(a.getAttribute('name')||'')))
+  for(const sheet of sheets){
+    const id=sheet.getAttribute('r:id')||Array.from(sheet.attributes).find(x=>x.localName==='id')?.value||''
+    const target=paths.get(id);if(!target)continue
+    const path=target.startsWith('/')?target.slice(1):'xl/'+target
+    if(!entries.has(path))continue
+    const doc=await xml(path),rows:string[][]=[]
+    for(const line of tags(doc,'row')){
+      const row:string[]=[]
+      const rowNo=Number(line.getAttribute('r')||rows.length+1)
+      if(!Number.isInteger(rowNo)||rowNo<1||rowNo>100000)throw new Error('Maksimal 100.000 baris per sheet.')
+      for(const cell of tags(line,'c')){
+        const ref=cell.getAttribute('r')||'',letters=ref.match(/^[A-Z]+/i)?.[0].toUpperCase()
+        const idx=letters?[...letters].reduce((n,ch)=>n*26+ch.charCodeAt(0)-64,0)-1:row.length
+        if(idx<0||idx>2047)continue
+        const t=cell.getAttribute('t'),v=tags(cell,'v')[0]?.textContent||''
+        let value=t==='s'?shared[Number(v)]||'':t==='inlineStr'?tags(cell,'t').map(x=>x.textContent||'').join(''):t==='e'?'':v
+        const fmt=numberFormats[Number(cell.getAttribute('s')||0)]||''
+        if((!t||t==='n')&&/^0+$/.test(fmt)&&/^\d+$/.test(value))value=value.padStart(fmt.length,'0')
+        row[idx]=value
+      }
+      while(rows.length<rowNo-1)rows.push([])
+      rows[rowNo-1]=Array.from(row,v=>v||'')
+    }
+    if(studentHeaderIndex(rows)>=0)return rows
+  }
+  throw new Error('Tidak ditemukan sheet dengan kolom NIS/NISN, Nama Siswa, dan Kelas. Pastikan data dan hasil rumus sudah tersimpan.')
+}
+
 const initialStudent={nis:'',name:'',class_name:'',gender:'L',guardian_name:'',guardian_phone:'',status:'Aktif'}
 const initialCase={student_id:'',opened_on:today(),domain:'Sosial',topic:'',priority:'Sedang',source:'',status:'Berjalan',summary:'',next_on:''}
 const initialRecord={student_id:'',case_id:'',happened_on:today(),title:'',domain:'Pribadi',status:'Terencana',notes:'',confidential:false,details:{} as Record<string,string>}
@@ -259,24 +366,28 @@ export default function App(){
     const issues:string[]=[]
     let inserted=0,duplicates=0
     try{
-      if(!file.name.toLowerCase().endsWith('.csv'))throw new Error('Pilih CSV UTF-8. Dari Google Sheets: File → Download → CSV.')
-      const lines=parseCsv(await file.text())
-      const headers=lines.shift()?.map(x=>x.trim().toLowerCase().replace(/\s+/g,' '))||[]
-      if(![['nis','nisn'],['nama','nama siswa','name'],['kelas','class']].every(aliases=>headers.some(h=>aliases.includes(h))))throw new Error('CSV wajib memiliki NIS, Nama/Nama Siswa, dan Kelas.')
-      const get=(row:string[],aliases:string[])=>{const i=headers.findIndex(h=>aliases.includes(h));return i<0?'':row[i]||''}
+      const allRows=await readStudentRows(file)
+      const headerAt=studentHeaderIndex(allRows)
+      if(headerAt<0)throw new Error('Kolom wajib: NIS/NISN, Nama Siswa, dan Kelas. Gunakan template atau periksa judul kolom.')
+      const headers=studentColumns(allRows[headerAt])
+      const lines=allRows.slice(headerAt+1)
+      const get=(row:string[],key:string)=>headers[key]<0?'':row[headers[key]]||''
       type ImportStudent={school_id:string;nis:string;name:string;class_name:string;gender:string;guardian_name:string;guardian_phone:string;status:string;counselor_id:string|null}
       const unique=new Map<string,ImportStudent>()
       lines.forEach((row,index)=>{
-        const nis=get(row,['nis','nisn']).trim()
-        const name=get(row,['nama','nama siswa','name']).trim()
-        const class_name=get(row,['kelas','class']).trim()
-        const gender=(get(row,['jk','jenis kelamin','gender']).trim()||'L').toUpperCase()
-        const statusRaw=get(row,['status']).trim().toLowerCase()
+        if(!row.some(v=>v.trim()))return
+        const rowNumber=index+headerAt+2
+        const nis=get(row,'nis').trim()
+        const name=get(row,'name').trim()
+        const class_name=get(row,'class_name').trim()
+        const rawGender=studentHeader(get(row,'gender'))
+        const gender=['p','perempuan','wanita','female','cewek'].includes(rawGender)?'P':['','l','laki laki','laki','pria','male','cowok'].includes(rawGender)?'L':'?'
+        const statusRaw=get(row,'status').trim().toLowerCase()
         const missing=[!nis?'NIS':null,!name?'Nama Siswa':null,!class_name?'Kelas':null].filter(Boolean).join(', ')
-        if(missing){issues.push(`Baris ${index+2} (NIS ${nis||'kosong'}): ${missing} kosong. Periksa DATA_SISWA atau rumus INDEX/MATCH.`);return}
-        if(!['L','P'].includes(gender)||!['','aktif','arsip'].includes(statusRaw)){issues.push(`Baris ${index+2} (NIS ${nis}): JK harus L/P dan Status harus Aktif/Arsip.`);return}
+        if(missing){issues.push(`Baris ${rowNumber} (NIS ${nis||'kosong'}): ${missing} kosong. Periksa DATA_SISWA atau rumus INDEX/MATCH.`);return}
+        if(!['L','P'].includes(gender)||!['','aktif','arsip'].includes(statusRaw)){issues.push(`Baris ${rowNumber} (NIS ${nis}): JK harus L/P dan Status harus Aktif/Arsip.`);return}
         if(unique.has(nis)){duplicates++;return}
-        unique.set(nis,{school_id:membership.school_id,nis,name,class_name,gender,guardian_name:get(row,['wali','nama orang tua/wali']).trim(),guardian_phone:get(row,['kontak','kontak wali (wa)']).trim(),status:statusRaw==='arsip'?'Arsip':'Aktif',counselor_id:user?.id||null})
+        unique.set(nis,{school_id:membership.school_id,nis,name,class_name,gender,guardian_name:get(row,'guardian_name').trim(),guardian_phone:get(row,'guardian_phone').trim(),status:statusRaw==='arsip'?'Arsip':'Aktif',counselor_id:user?.id||null})
       })
       const rows=[...unique.values()]
       if(!rows.length){showImportReport('Impor siswa',0,duplicates,issues.length?issues:['Tidak ada baris siswa yang valid.']);return}
@@ -297,11 +408,20 @@ export default function App(){
       }
       const fresh=rows.filter(r=>!existing.has(r.nis))
       duplicates+=rows.length-fresh.length
-      for(let offset=0;offset<fresh.length;offset+=200){
-        const {error}=await client.from('students').insert(fresh.slice(offset,offset+200))
-        if(error)throw new Error(`Gagal menyimpan batch berikutnya: ${error.message}`)
-        inserted+=Math.min(200,fresh.length-offset)
+      const db=client
+      async function saveBatch(batch:ImportStudent[]):Promise<void>{
+        const {error}=await db.from('students').insert(batch)
+        if(!error){inserted+=batch.length;return}
+        // Only split deterministic constraint/data failures, never unknown network failures.
+        if(!/^(22|23)/.test(error.code||''))throw new Error('Gagal menyimpan batch: '+error.message)
+        if(batch.length===1){
+          if(error.code==='23505'){const {data, error:lookupError}=await db.from('students').select('nis').eq('school_id',batch[0].school_id).eq('nis',batch[0].nis).limit(1);if(lookupError)throw lookupError;if(data?.length){duplicates++;return}}
+          issues.push('NIS '+batch[0].nis+': '+error.message);return
+        }
+        const mid=Math.floor(batch.length/2)
+        await saveBatch(batch.slice(0,mid));await saveBatch(batch.slice(mid))
       }
+      for(let offset=0;offset<fresh.length;offset+=200)await saveBatch(fresh.slice(offset,offset+200))
       if(inserted)await refresh()
       showImportReport('Impor siswa',inserted,duplicates,issues)
     }catch(e:any){
@@ -381,7 +501,7 @@ export default function App(){
     <div className="content">{demo&&<div className="demo-banner"><CircleHelp size={16}/> Mode demo: data hanya tersimpan selama halaman ini terbuka. Sambungkan Supabase untuk pemakaian sebenarnya.</div>}
       {importReport&&((tab==='students'&&importReport.title.includes('siswa'))||(kinds.some(([key])=>key===tab)&&importReport.title.includes('layanan')))&&<section className="panel" role="status" style={{padding:16,marginBottom:16}}><div className="panel-heading"><div><h3>{importReport.title}</h3><p>{importReport.summary}</p></div><button className="btn secondary" type="button" onClick={()=>setImportReport(null)}>Tutup</button></div>{importReport.issues.length>0&&<><p>Baris berikut tidak diimpor. Perbaiki sumber lalu impor ulang; data yang sudah masuk tidak ditimpa.</p><ul>{importReport.issues.slice(0,12).map((item,i)=><li key={i}>{item}</li>)}</ul>{importReport.issues.length>12&&<p>Dan {importReport.issues.length-12} baris bermasalah lainnya.</p>}<button className="btn secondary" type="button" onClick={()=>download('laporan-impor-bk-pro.csv',csv(importReport.issues.map(message=>({Masalah:message})),['Masalah']))}><Download size={15}/> Unduh laporan lengkap</button></>}</section>}
       {tab==='dashboard'&&<><div className="hero-card"><div><span className="eyebrow">WORKSPACE BIMBINGAN & KONSELING</span><h1>Selamat datang, {membership.display_name.split(' ')[0]}.</h1><p>Setiap perhatian kecil dapat menjadi langkah besar untuk siswa. Mulai dari yang perlu ditindaklanjuti hari ini.</p>{canEdit&&<button className="btn white" onClick={()=>{setTab('cases');openNew('case')}}><Plus size={17}/> Catat kasus baru</button>}</div><div className="hero-art"><div className="hero-orbit"><HeartHandshake size={62} strokeWidth={1.3}/></div><span className="hero-spark one"/><span className="hero-spark two"/></div></div><div className="section-head"><div><span className="small-tag">RINGKASAN HARI INI</span><h2>Gambaran layanan</h2></div><span className="muted">Data tahun ajaran {membership.school?.academic_year}</span></div><div className="stat-grid"><Stat label="Siswa aktif" value={report.total} icon={<Users/>} tone="violet" description="Terdaftar di sekolah"/><Stat label="Kasus berjalan" value={role==='principal'?Math.max(0,report.handled-report.completed):activeCases.length} icon={<ShieldCheck/>} tone="orange" description="Butuh pemantauan"/><Stat label="Layanan tercatat" value={report.service} icon={<BookOpen/>} tone="blue" description="Semua jenis layanan"/>{role==='principal'?<Stat label="Sesi individu" value={report.sessions} icon={<HeartHandshake/>} tone="pink" description="Data agregat tanpa rincian sesi"/>:<Stat label="Jatuh tempo" value={due} icon={<CalendarDays/>} tone="pink" description="Perlu perhatian hari ini"/>}</div>{role!=='principal'&&<div className="dashboard-grid"><section className="panel"><div className="panel-heading"><div><h3>Kasus terbaru</h3><p>Ikuti perkembangan kasus yang sedang ditangani.</p></div><button className="subtle-link" onClick={()=>setTab('cases')}>Lihat semua <ArrowRight size={15}/></button></div>{cases.length?<div className="stack-list">{cases.slice(0,4).map(c=><div className="list-line" key={c.id}><span className="line-icon"><ShieldCheck size={18}/></span><div><strong>{idName(c.student_id,students)}</strong><small>{c.topic} · {dateLabel(c.opened_on)}</small></div><Pill label={c.status}/></div>)}</div>:<Empty message="Belum ada kasus. Catat kasus pertama untuk memulai."/>}</section><section className="panel"><div className="panel-heading"><div><h3>Akses cepat</h3><p>Langsung ke pekerjaan yang paling sering digunakan.</p></div></div><div className="quick-grid"><Quick icon={<Users/>} title="Tambah siswa" text="Lengkapi data dasar" onClick={()=>{setTab('students');openNew('student')}}/><Quick icon={<HeartHandshake/>} title="Catat konseling" text="Sesi dan tindak lanjut" onClick={()=>{setTab('counseling');openNew('record')}}/><Quick icon={<CalendarDays/>} title="Buat agenda" text="Jadwalkan layanan" onClick={()=>{setTab('agenda');openNew('record')}}/><Quick icon={<BarChart3/>} title="Lihat laporan" text="Ringkasan sekolah" onClick={()=>setTab('reports')}/></div></section></div>}</>}
-      {tab==='students'&&<><PageTitle kicker="DATA SISWA" title="Siswa 360°" description="Cari, urutkan, dan kelola profil siswa dalam satu daftar." action={canEdit?<button className="btn primary" onClick={()=>openNew('student')}><Plus size={17}/> Tambah siswa</button>:null}/><div className="toolbar"><div className="search-box"><Search size={18}/><input aria-label="Cari siswa" placeholder="Cari nama, NIS, atau kelas…" value={search} onChange={e=>setSearch(e.target.value)}/></div><select aria-label="Filter kelas" value={classFilter} onChange={e=>setClassFilter(e.target.value)}><option>Semua kelas</option>{classes.map(c=><option key={c}>{c}</option>)}</select><div className="filter-segments" role="group" aria-label="Daftar siswa"><button className={statusFilter==='Aktif'?'selected':''} onClick={()=>setStatusFilter('Aktif')}>Aktif <span>{activeStudentCount}</span></button><button className={statusFilter==='Arsip'?'selected':''} onClick={()=>setStatusFilter('Arsip')}>Arsip <span>{archivedStudentCount}</span></button><button className={statusFilter==='Semua'?'selected':''} onClick={()=>setStatusFilter('Semua')}>Semua</button></div><select aria-label="Urutkan siswa" value={studentSort} onChange={e=>setStudentSort(e.target.value)}><option value="name-asc">Nama A–Z</option><option value="name-desc">Nama Z–A</option><option value="class">Kelas</option></select><button className="btn secondary" onClick={exportStudents}><Download size={16}/> Ekspor CSV</button>{canEdit&&<><a className="btn secondary" href="/template-siswa-bk-pro.csv" download="template-siswa-bk-pro.csv"><FileText size={16}/> Unduh template</a><button className="btn secondary" onClick={()=>importRef.current?.click()}><Upload size={16}/> Impor CSV</button><input type="file" ref={importRef} accept=".csv,text/csv" hidden onChange={e=>{if(e.target.files?.[0])void importStudents(e.target.files[0]);e.target.value=''}}/></>}</div>{canEdit&&<div className="bulk-student-toolbar"><label className="bulk-select-all"><input type="checkbox" checked={allVisibleChecked} disabled={busy||sortedStudents.length===0} onChange={e=>{const visible=sortedStudents.map(s=>s.id);setCheckedStudentIds(old=>e.target.checked?Array.from(new Set([...old,...visible])):old.filter(id=>!visible.includes(id)))}}/> Pilih semua hasil filter ({sortedStudents.length})</label><span>{checkedStudents.length} dipilih</span><button type="button" className="btn danger" disabled={busy||checkedStudents.length===0} onClick={()=>askDeleteStudents(checkedStudents,checkedStudents.length+' siswa terpilih')}><Trash2 size={15}/> Hapus terpilih</button>{classDeleteCandidates.length>0&&<button type="button" className="btn secondary delete-class-btn" disabled={busy} onClick={()=>askDeleteStudents(classDeleteCandidates,'seluruh siswa kelas '+classFilter)}><Trash2 size={15}/> Hapus kelas {classFilter} ({classDeleteCandidates.length})</button>}</div>}<p className="import-hint">Impor menambahkan NIS baru; data yang sudah ada tidak ditimpa. Ekspor mengikuti daftar lengkap sekolah, termasuk siswa yang sedang tidak cocok dengan filter.</p><div className="panel table-panel"><div className="table-caption"><strong>{sortedStudents.length} dari {students.length} siswa</strong><span>Klik siswa untuk melihat riwayat, mengedit profil, atau mengarsipkan.</span></div><div className="table-wrap"><table><thead><tr>{canEdit&&<th className="student-check-cell">Pilih</th>}<th>Siswa</th><th>NIS</th><th>Kelas</th><th>Wali</th><th>Status</th><th></th></tr></thead><tbody>{sortedStudents.map(s=><tr key={s.id} onClick={()=>setSelected(s)}>{canEdit&&<td className="student-check-cell" onClick={e=>e.stopPropagation()}><input type="checkbox" aria-label={'Pilih '+s.name} disabled={busy} checked={checkedStudentIds.includes(s.id)} onChange={e=>setCheckedStudentIds(old=>e.target.checked?[...old.filter(id=>id!==s.id),s.id]:old.filter(id=>id!==s.id))}/></td>}<td><div className="person"><span className="person-avatar">{s.name.slice(0,1)}</span><strong>{s.name}</strong></div></td><td>{s.nis}</td><td>{s.class_name}</td><td>{s.guardian_name||'—'}</td><td><Pill label={s.status}/></td><td><div className="student-row-actions"><ArrowRight size={16}/>{canEdit&&<button type="button" className="row-delete" title={'Hapus '+s.name} aria-label={'Hapus '+s.name} disabled={busy} onClick={e=>{e.stopPropagation();askDeleteStudents([s],s.name)}}><Trash2 size={15}/></button>}</div></td></tr>)}</tbody></table></div>{!sortedStudents.length&&<Empty message={statusFilter==='Arsip'?'Belum ada siswa di arsip. Siswa yang diarsipkan akan muncul di sini dan dapat dipulihkan.':'Belum ada siswa sesuai pencarian atau filter. Tambahkan siswa atau sesuaikan filter.'}/>}</div></>}
+      {tab==='students'&&<><PageTitle kicker="DATA SISWA" title="Siswa 360°" description="Cari, urutkan, dan kelola profil siswa dalam satu daftar." action={canEdit?<button className="btn primary" onClick={()=>openNew('student')}><Plus size={17}/> Tambah siswa</button>:null}/><div className="toolbar"><div className="search-box"><Search size={18}/><input aria-label="Cari siswa" placeholder="Cari nama, NIS, atau kelas…" value={search} onChange={e=>setSearch(e.target.value)}/></div><select aria-label="Filter kelas" value={classFilter} onChange={e=>setClassFilter(e.target.value)}><option>Semua kelas</option>{classes.map(c=><option key={c}>{c}</option>)}</select><div className="filter-segments" role="group" aria-label="Daftar siswa"><button className={statusFilter==='Aktif'?'selected':''} onClick={()=>setStatusFilter('Aktif')}>Aktif <span>{activeStudentCount}</span></button><button className={statusFilter==='Arsip'?'selected':''} onClick={()=>setStatusFilter('Arsip')}>Arsip <span>{archivedStudentCount}</span></button><button className={statusFilter==='Semua'?'selected':''} onClick={()=>setStatusFilter('Semua')}>Semua</button></div><select aria-label="Urutkan siswa" value={studentSort} onChange={e=>setStudentSort(e.target.value)}><option value="name-asc">Nama A–Z</option><option value="name-desc">Nama Z–A</option><option value="class">Kelas</option></select><button className="btn secondary" onClick={exportStudents}><Download size={16}/> Ekspor CSV</button>{canEdit&&<><a className="btn secondary" href="/template-siswa-bk-pro.csv" download="template-siswa-bk-pro.csv"><FileText size={16}/> Unduh template</a><button className="btn secondary" disabled={busy} onClick={()=>importRef.current?.click()}><Upload size={16}/> {busy?'Memproses…':'Impor Excel / CSV'}</button><input type="file" ref={importRef} accept=".xlsx,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden onChange={e=>{if(e.target.files?.[0])void importStudents(e.target.files[0]);e.target.value=''}}/></>}</div>{canEdit&&<div className="bulk-student-toolbar"><label className="bulk-select-all"><input type="checkbox" checked={allVisibleChecked} disabled={busy||sortedStudents.length===0} onChange={e=>{const visible=sortedStudents.map(s=>s.id);setCheckedStudentIds(old=>e.target.checked?Array.from(new Set([...old,...visible])):old.filter(id=>!visible.includes(id)))}}/> Pilih semua hasil filter ({sortedStudents.length})</label><span>{checkedStudents.length} dipilih</span><button type="button" className="btn danger" disabled={busy||checkedStudents.length===0} onClick={()=>askDeleteStudents(checkedStudents,checkedStudents.length+' siswa terpilih')}><Trash2 size={15}/> Hapus terpilih</button>{classDeleteCandidates.length>0&&<button type="button" className="btn secondary delete-class-btn" disabled={busy} onClick={()=>askDeleteStudents(classDeleteCandidates,'seluruh siswa kelas '+classFilter)}><Trash2 size={15}/> Hapus kelas {classFilter} ({classDeleteCandidates.length})</button>}</div>}<p className="import-hint">Impor Excel (.xlsx) atau CSV menambahkan NIS baru; data yang sudah ada tidak ditimpa. Ekspor mengikuti daftar lengkap sekolah, termasuk siswa yang sedang tidak cocok dengan filter.</p><div className="panel table-panel"><div className="table-caption"><strong>{sortedStudents.length} dari {students.length} siswa</strong><span>Klik siswa untuk melihat riwayat, mengedit profil, atau mengarsipkan.</span></div><div className="table-wrap"><table><thead><tr>{canEdit&&<th className="student-check-cell">Pilih</th>}<th>Siswa</th><th>NIS</th><th>Kelas</th><th>Wali</th><th>Status</th><th></th></tr></thead><tbody>{sortedStudents.map(s=><tr key={s.id} onClick={()=>setSelected(s)}>{canEdit&&<td className="student-check-cell" onClick={e=>e.stopPropagation()}><input type="checkbox" aria-label={'Pilih '+s.name} disabled={busy} checked={checkedStudentIds.includes(s.id)} onChange={e=>setCheckedStudentIds(old=>e.target.checked?[...old.filter(id=>id!==s.id),s.id]:old.filter(id=>id!==s.id))}/></td>}<td><div className="person"><span className="person-avatar">{s.name.slice(0,1)}</span><strong>{s.name}</strong></div></td><td>{s.nis}</td><td>{s.class_name}</td><td>{s.guardian_name||'—'}</td><td><Pill label={s.status}/></td><td><div className="student-row-actions"><ArrowRight size={16}/>{canEdit&&<button type="button" className="row-delete" title={'Hapus '+s.name} aria-label={'Hapus '+s.name} disabled={busy} onClick={e=>{e.stopPropagation();askDeleteStudents([s],s.name)}}><Trash2 size={15}/></button>}</div></td></tr>)}</tbody></table></div>{!sortedStudents.length&&<Empty message={statusFilter==='Arsip'?'Belum ada siswa di arsip. Siswa yang diarsipkan akan muncul di sini dan dapat dipulihkan.':'Belum ada siswa sesuai pencarian atau filter. Tambahkan siswa atau sesuaikan filter.'}/>}</div></>}
       {tab==='attendance'&&<>
         <PageTitle kicker="KEHADIRAN SISWA" title="Absensi" description="Catat kehadiran, buka tanggal sebelumnya, dan temukan hari yang belum diabsen." action={canEdit?<button className="btn primary" onClick={()=>void saveAttendance()} disabled={busy}><Check size={17}/>{busy?'Menyimpan…':'Simpan absensi'}</button>:null}/>
         <div className="attendance-layout">
